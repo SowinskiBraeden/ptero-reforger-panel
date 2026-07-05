@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: reforger-panel-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reforger
+      POSTGRES_PASSWORD: reforger
+      POSTGRES_DB: reforger_panel
+    ports:
+      # Host port 5433 to avoid clashing with any locally installed Postgres.
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U reforger -d reforger_panel']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

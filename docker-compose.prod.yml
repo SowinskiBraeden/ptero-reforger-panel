@@ -1,0 +1,38 @@
+# Private production deployment: Postgres + the panel in one stack.
+#   cp .env.example .env   (fill in Discord, Pterodactyl, secrets)
+#   docker compose -f docker-compose.prod.yml up -d --build
+# Put a reverse proxy with HTTPS (Caddy/nginx/Tailscale Serve) in front of
+# port 3001 and point DISCORD_REDIRECT_URI / WEB_ORIGIN at that public URL.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reforger
+      POSTGRES_PASSWORD: reforger
+      POSTGRES_DB: reforger_panel
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U reforger -d reforger_panel']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  panel:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      # Inside the compose network Postgres is reachable by service name.
+      DATABASE_URL: postgresql://reforger:reforger@postgres:5432/reforger_panel
+      DEV_AUTH_BYPASS: 'false'
+    ports:
+      - '3001:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

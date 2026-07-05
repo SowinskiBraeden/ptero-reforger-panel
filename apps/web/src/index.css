@@ -1,0 +1,124 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-graphite-950: #12161b;
+  --color-graphite-900: #191e24;
+  --color-graphite-850: #20262e;
+  --color-graphite-800: #29313a;
+  --color-graphite-700: #3a4552;
+  --color-graphite-600: #505c69;
+  --color-slate-ink: #b1bac4;
+  --color-slate-dim: #838e9a;
+  --color-accent-500: #6f8fab;
+  --color-accent-400: #9bb4ca;
+  --color-accent-600: #58758e;
+  --color-warn-400: #d2a85b;
+  --color-danger-400: #d37a70;
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+}
+
+body {
+  @apply bg-graphite-950 text-zinc-200 antialiased;
+  background: var(--color-graphite-950);
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  @apply outline-none;
+}
+
+:focus-visible {
+  @apply ring-2 ring-accent-500/45 ring-offset-2 ring-offset-graphite-950;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent-500) 35%, transparent);
+}
+
+.panel-card {
+  /* min-w-0 lets cards shrink inside grid tracks instead of widening them. */
+  @apply min-w-0 rounded-lg border border-graphite-700/70 bg-graphite-900 shadow-sm shadow-black/20;
+}
+
+.panel-card-header {
+  @apply flex flex-wrap items-center justify-between gap-3 border-b border-graphite-700/60 px-5 py-4;
+}
+
+.panel-card-title {
+  @apply text-xs font-semibold uppercase tracking-[0.14em] text-slate-ink;
+}
+
+.page-title {
+  @apply text-2xl font-semibold text-zinc-100;
+  letter-spacing: 0;
+}
+
+.page-kicker {
+  @apply mt-1 max-w-2xl text-sm leading-6 text-slate-ink;
+}
+
+.input {
+  @apply rounded-md border border-graphite-600 bg-graphite-950/55 px-3 py-2 text-sm text-zinc-200 shadow-sm transition-colors placeholder:text-slate-dim hover:border-slate-dim/70 focus:border-accent-500 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.input-error {
+  @apply border-danger-400/70 focus:border-danger-400 focus:ring-danger-400/30;
+}
+
+/* No native number spinners — they clash with the theme. */
+input[type='number'].input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+input[type='number'].input::-webkit-inner-spin-button,
+input[type='number'].input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Selects: replace the native chrome with a themed chevron. */
+select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b98a5' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.65rem center;
+  padding-right: 2rem;
+}
+select.input option {
+  @apply bg-graphite-850 text-zinc-200;
+}
+
+.data-table-scroll {
+  @apply overflow-x-auto;
+}
+
+.data-table {
+  @apply w-full min-w-fit text-sm;
+}
+
+.data-table th,
+.data-table td {
+  @apply whitespace-nowrap pr-4 last:pr-0;
+}
+
+.data-table thead tr {
+  @apply border-b border-graphite-700/60 text-left text-[11px] uppercase tracking-wider text-slate-dim;
+}
+
+.data-table th {
+  @apply pb-2 font-medium;
+}
+
+.data-table tbody tr {
+  @apply border-b border-graphite-800/80 last:border-0 hover:bg-graphite-850/50;
+}
+
+.data-table td {
+  @apply py-2.5;
+}
