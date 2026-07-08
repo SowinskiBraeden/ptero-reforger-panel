@@ -59,8 +59,8 @@ describe('normalizeImageUrl', () => {
   });
 });
 
-describe('WorkshopClient image enrichment', () => {
-  it('warms list images from the detail endpoint in the background and caches them', async () => {
+describe('WorkshopClient preview cache', () => {
+  it('does not fan out detail requests during search', async () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const path = String(url);
       if (path.includes('/v1/mod/')) {
@@ -76,26 +76,22 @@ describe('WorkshopClient image enrichment', () => {
 
     const first = await client.search('', 1);
     expect(first.mods[0]!.imageUrl).toBeNull();
-    await vi.waitFor(() => {
-      const detailCalls = fetchImpl.mock.calls.filter((c) => String(c[0]).includes('/v1/mod/'));
-      expect(detailCalls).toHaveLength(1);
-    });
+    expect(first.mods[0]!.version).toBeNull();
     const detailCalls = fetchImpl.mock.calls.filter((c) => String(c[0]).includes('/v1/mod/'));
-    expect(detailCalls).toHaveLength(1);
+    expect(detailCalls).toHaveLength(0);
 
-    // Second search hits the cache — no extra detail request.
+    await client.getMod('AAAAAAAAAAAAAAA1');
+
+    // Second search can use the cached detail without another detail request.
     const second = await client.search('', 1);
     expect(second.mods[0]!.imageUrl).toBe(REAL_IMAGE);
+    expect(second.mods[0]!.version).toBe('1.2.0');
     const detailCallsAfter = fetchImpl.mock.calls.filter((c) => String(c[0]).includes('/v1/mod/'));
     expect(detailCallsAfter).toHaveLength(1);
   });
 
-  it('leaves the image empty when the detail fetch fails', async () => {
+  it('leaves the image empty when there is no cached detail', async () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
-      const path = String(url);
-      if (path.includes('/v1/mod/')) {
-        return new Response('nope', { status: 500 });
-      }
       return new Response(JSON.stringify(listResponse()), { status: 200 });
     });
     const client = new WorkshopClient({
@@ -104,5 +100,32 @@ describe('WorkshopClient image enrichment', () => {
     });
     const result = await client.search('', 1);
     expect(result.mods[0]!.imageUrl).toBeNull();
+  });
+
+  it('extracts scenario IDs from malformed scenario metadata', async () => {
+    const fetchImpl = vi.fn(async () => {
+      const detail = detailResponse('AAAAAAAAAAAAAAA1');
+      detail.mod.scenarios = [
+        {
+          name: '[OG] Udachne',
+          description: '',
+          scenarioID: '',
+          gamemode: 'Scenario ID{39AB5D9094E502AA}Missions/OG_Conflict.conf',
+          playerCount: 0,
+          imageURL: '',
+        },
+      ];
+      return new Response(JSON.stringify(detail), { status: 200 });
+    });
+    const client = new WorkshopClient({
+      baseUrl: 'https://workshop.test',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const mod = await client.getMod('AAAAAAAAAAAAAAA1');
+    expect(mod.scenarios[0]).toMatchObject({
+      scenarioId: '{39AB5D9094E502AA}Missions/OG_Conflict.conf',
+      gamemode: null,
+    });
   });
 });

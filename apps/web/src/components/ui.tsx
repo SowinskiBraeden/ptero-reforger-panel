@@ -56,7 +56,11 @@ export function ModImage({ src, className = '' }: { src: string | null; classNam
 }
 
 const STATUS_STYLES: Record<ServerStatus, { dot: string; text: string; label: string }> = {
-  online: { dot: 'bg-accent-400', text: 'text-accent-400', label: 'Online' },
+  online: {
+    dot: 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.75)]',
+    text: 'text-emerald-300',
+    label: 'Online',
+  },
   offline: { dot: 'bg-zinc-500', text: 'text-zinc-400', label: 'Offline' },
   starting: { dot: 'bg-warn-400 animate-pulse', text: 'text-warn-400', label: 'Starting' },
   stopping: { dot: 'bg-warn-400 animate-pulse', text: 'text-warn-400', label: 'Stopping' },

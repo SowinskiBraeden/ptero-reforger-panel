@@ -25,6 +25,9 @@ const modPreviewSchema = z.object({
   size: z.string().catch(''),
   rating: z.string().catch(''),
   ID: z.string(),
+  version: z.string().nullish(),
+  summary: z.string().nullish(),
+  tags: z.array(z.string()).catch([]),
 });
 
 const searchResponseSchema = z.object({
@@ -61,7 +64,7 @@ const modDetailSchema = z.object({
       z.object({
         name: z.string(),
         description: z.string().catch(''),
-        scenarioID: z.string(),
+        scenarioID: z.string().catch(''),
         gamemode: z.string().catch(''),
         playerCount: z.number().catch(0),
         imageURL: z.string().catch(''),
@@ -77,6 +80,23 @@ export type WorkshopSort = 'popularity' | 'newest' | 'subscribers' | 'version_si
 function extractModId(apiModUrl: string): string | null {
   const match = /\/v1\/mod\/([^/?#]+)/.exec(apiModUrl);
   return match?.[1] ?? null;
+}
+
+const SCENARIO_ID_PATTERN = /(\{[0-9a-fA-F]{16}\}[^\s,;)]*?\.conf)/;
+const SCENARIO_ID_WITH_LABEL_PATTERN =
+  /scenario\s*id\s*:?\s*\{[0-9a-fA-F]{16}\}[^\s,;)]*?\.conf/i;
+
+function extractScenarioId(...values: Array<string | null | undefined>): string {
+  for (const value of values) {
+    const match = value?.match(SCENARIO_ID_PATTERN);
+    if (match?.[1]) return match[1];
+  }
+  return '';
+}
+
+function cleanScenarioText(value: string | null | undefined): string | null {
+  const cleaned = value?.replace(SCENARIO_ID_WITH_LABEL_PATTERN, '').trim();
+  return cleaned || null;
 }
 
 /**
@@ -101,18 +121,29 @@ function toPreview(mod: z.infer<typeof modPreviewSchema>): WorkshopModPreview {
     size: mod.size || null,
     rating: mod.rating || null,
     workshopUrl: mod.originalModURL || null,
+    version: mod.version ?? null,
+    summary: mod.summary ?? null,
+    tags: mod.tags,
   };
 }
 
-const IMAGE_CACHE_TTL_MS = 60 * 60 * 1000; // matches upstream's 1 h detail cache
-const IMAGE_FETCH_CONCURRENCY = 5;
+const PREVIEW_CACHE_TTL_MS = 60 * 60 * 1000; // matches upstream's 1 h detail cache
 
 export class WorkshopClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
-  /** modId → real image URL (or null when the mod has none). */
-  private imageCache = new Map<string, { url: string | null; expiresAt: number }>();
+  /** modId -> detail fields used to make browse cards useful. */
+  private previewCache = new Map<
+    string,
+    {
+      imageUrl: string | null;
+      version: string | null;
+      summary: string | null;
+      tags: string[];
+      expiresAt: number;
+    }
+  >();
 
   constructor(options: { baseUrl: string; fetchImpl?: typeof fetch; timeoutMs?: number }) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
@@ -175,67 +206,22 @@ export class WorkshopClient {
       throw ApiError.upstream('Workshop API returned an unexpected response shape.');
     }
     const mods = parsed.data.data.map(toPreview);
-    this.applyCachedImages(mods);
-    void this.enrichImages(mods).catch(() => undefined);
+    this.applyCachedPreviews(mods);
     return {
       mods,
       meta: parsed.data.meta,
     };
   }
 
-  private applyCachedImages(mods: WorkshopModPreview[]): void {
+  private applyCachedPreviews(mods: WorkshopModPreview[]): void {
     const now = Date.now();
     for (const mod of mods) {
-      if (mod.imageUrl) continue;
-      const cached = this.imageCache.get(mod.id);
+      const cached = this.previewCache.get(mod.id);
       if (cached && cached.expiresAt > now) {
-        mod.imageUrl = cached.url;
-      }
-    }
-  }
-
-  /**
-   * List responses carry no usable images, so fill them in from the detail
-   * endpoint (which does). This runs as a background cache warmer from search:
-   * first-load results are fast, later visits pick up cached images.
-   */
-  private async enrichImages(mods: WorkshopModPreview[]): Promise<void> {
-    const now = Date.now();
-    const pending: WorkshopModPreview[] = [];
-    for (const mod of mods) {
-      if (mod.imageUrl) continue;
-      const cached = this.imageCache.get(mod.id);
-      if (cached && cached.expiresAt > now) {
-        mod.imageUrl = cached.url;
-      } else {
-        pending.push(mod);
-      }
-    }
-    if (pending.length === 0) return;
-
-    const queue = [...pending];
-    const worker = async () => {
-      for (;;) {
-        const mod = queue.shift();
-        if (!mod) return;
-        try {
-          const detail = await this.getMod(mod.id);
-          mod.imageUrl = detail.imageUrl;
-        } catch {
-          mod.imageUrl = null;
-        }
-        this.imageCache.set(mod.id, {
-          url: mod.imageUrl,
-          expiresAt: Date.now() + IMAGE_CACHE_TTL_MS,
-        });
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(IMAGE_FETCH_CONCURRENCY, queue.length) }, () => worker()),
-    );
-    if (this.imageCache.size > 5_000) {
-      for (const [key, value] of this.imageCache) {
-        if (value.expiresAt <= now) this.imageCache.delete(key);
+        mod.imageUrl = mod.imageUrl ?? cached.imageUrl;
+        mod.version = mod.version ?? cached.version;
+        mod.summary = mod.summary ?? cached.summary;
+        mod.tags = mod.tags.length > 0 ? mod.tags : cached.tags;
       }
     }
   }
@@ -247,7 +233,7 @@ export class WorkshopClient {
       throw ApiError.upstream('Workshop API returned an unexpected response shape.');
     }
     const mod = parsed.data.mod;
-    return {
+    const detail = {
       id: mod.id,
       name: mod.name,
       author: mod.author,
@@ -272,11 +258,30 @@ export class WorkshopClient {
       scenarios: mod.scenarios.map((scenario) => ({
         name: scenario.name,
         description: scenario.description || null,
-        scenarioId: scenario.scenarioID,
-        gamemode: scenario.gamemode || null,
+        scenarioId: extractScenarioId(
+          scenario.scenarioID,
+          scenario.gamemode,
+          scenario.description,
+          scenario.name,
+        ),
+        gamemode: cleanScenarioText(scenario.gamemode),
         playerCount: scenario.playerCount || null,
         imageUrl: normalizeImageUrl(scenario.imageURL),
       })),
     };
+    this.previewCache.set(detail.id, {
+      imageUrl: detail.imageUrl,
+      version: detail.version,
+      summary: detail.summary ?? detail.description,
+      tags: detail.tags,
+      expiresAt: Date.now() + PREVIEW_CACHE_TTL_MS,
+    });
+    if (this.previewCache.size > 5_000) {
+      const now = Date.now();
+      for (const [key, value] of this.previewCache) {
+        if (value.expiresAt <= now) this.previewCache.delete(key);
+      }
+    }
+    return detail;
   }
 }

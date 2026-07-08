@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { mergeMissions, parseMissionList, scenariosFromWorkshopMod } from './missions-catalog.js';
+import {
+  hasScenarioTag,
+  mergeMissions,
+  parseMissionList,
+  scenariosFromWorkshopMod,
+} from './missions-catalog.js';
 
 // Verbatim shape from a real console.log (server runs with -listScenarios).
 const LOG = [
@@ -41,6 +46,12 @@ describe('parseMissionList', () => {
 });
 
 describe('workshop scenario helpers', () => {
+  it('recognizes scenario tag variants from the workshop', () => {
+    expect(hasScenarioTag(['SCENARIOS_MP'])).toBe(true);
+    expect(hasScenarioTag(['scenario sp'])).toBe(true);
+    expect(hasScenarioTag(['WEAPONS'])).toBe(false);
+  });
+
   it('converts mod scenarios into mission entries', () => {
     const missions = scenariosFromWorkshopMod({
       id: 'ABC',

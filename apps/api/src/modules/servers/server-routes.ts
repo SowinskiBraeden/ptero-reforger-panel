@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import type {
   LogIngestionHealth,
+  MissionInfo,
+  ModDependencyIssue,
   ServerResources,
   ServerStatus,
   ServerSummary,
@@ -17,7 +19,13 @@ import type { GameServerProvider } from '../pterodactyl/types.js';
 import type { LogPathResolver } from '../reforger-logs/ingestion/log-path-resolver.js';
 import type { IngestionScheduler, ScheduledServer } from '../reforger-logs/ingestion/scheduler.js';
 import type { MissionCatalog } from '../reforger-logs/missions-catalog.js';
-import { mergeMissions, scenariosFromWorkshopMod } from '../reforger-logs/missions-catalog.js';
+import {
+  DEFAULT_MISSION,
+  DEFAULT_SCENARIO_ID,
+  hasScenarioTag,
+  mergeMissions,
+  scenariosFromWorkshopMod,
+} from '../reforger-logs/missions-catalog.js';
 import type { ServerRecord, ServerService } from './server-service.js';
 import type { WorkshopClient } from '../workshop/workshop-client.js';
 
@@ -46,7 +54,8 @@ const performanceBodySchema = z
       .string()
       .trim()
       .max(200)
-      .regex(/^\{[0-9A-Fa-f]{16}\}\S+\.conf$/, 'Invalid scenario id.')
+      // Allow spaces in the path portion (some modded scenario IDs contain them).
+      .regex(/^\{[0-9A-Fa-f]{16}\}[^\0\r\n]+\.conf$/, 'Invalid scenario id.')
       .nullable(),
     maxPlayers: z.number().int().min(1).max(128).nullable(),
     serverMaxViewDistance: z.number().int().min(500).max(10000).nullable(),
@@ -290,30 +299,120 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
   router.get('/:slug/missions', async (req, res, next) => {
     try {
       const server = await loadServer(req.params.slug);
-      const logMissions = deps.missions ? (await deps.missions.list()).missions : [];
-      const modMissions = [];
+
+      // Resolve the installed mod list from config.json.
+      // Prefer the mods service (already owns that parse); fall back to configSync.
+      let installedModIds: string[] = [];
       if (deps.mods) {
-        const installed = await deps.mods.getMods(server);
+        const modsData = await deps.mods.getMods(server);
+        installedModIds = modsData.mods.map((m) => m.modId);
+      } else if (deps.configSync) {
+        const config = await deps.configSync.getLiveConfig(server).catch(() => null);
+        installedModIds = (config?.mods ?? []).map((m) => m.modId);
+      }
+
+      // Workshop API -> scenarios from installed scenario-tagged mods.
+      const modMissions: MissionInfo[] = [];
+      let scenarioLookupComplete = true;
+      if (installedModIds.length > 0) {
         const details = await Promise.allSettled(
-          installed.mods.map((mod) => deps.workshop.getMod(mod.modId)),
+          installedModIds.map((modId) => deps.workshop.getMod(modId)),
         );
+        scenarioLookupComplete = details.every((result) => result.status === 'fulfilled');
         for (const result of details) {
-          if (result.status === 'fulfilled') {
-            modMissions.push(...scenariosFromWorkshopMod(result.value));
+          if (result.status !== 'fulfilled') continue;
+          const mod = result.value;
+          if (hasScenarioTag(mod.tags)) {
+            modMissions.push(...scenariosFromWorkshopMod(mod));
           }
         }
       }
-      if (!deps.missions && !deps.mods) {
-        throw ApiError.notConfigured('Missions require logs or config/mod access.');
-      }
+
       res.json({
-        missions: mergeMissions(logMissions, modMissions),
-        fetchedAt: new Date().toISOString(),
+        missions: mergeMissions([DEFAULT_MISSION], modMissions),
+        fetchedAt: scenarioLookupComplete ? new Date().toISOString() : null,
       });
     } catch (error) {
       next(error);
     }
   });
+
+  router.get(
+    '/:slug/logs/stream',
+    requireCapability('ops.health.view', 'Live console stream is restricted.'),
+    async (req, res, next) => {
+      try {
+        const server = await loadServer(req.params.slug);
+        if (!deps.resolveLogPath) {
+          throw ApiError.notConfigured('Log streaming requires a configured game server backend.');
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        res.flushHeaders();
+
+        const controller = new AbortController();
+        req.on('close', () => controller.abort());
+
+        // Poll the log file every 2 seconds and push only new lines via SSE.
+        // Tracks total file size to derive the new-content offset on each poll,
+        // so we never re-send lines and handle log rotation gracefully.
+        let lastTotalBytes = 0;
+
+        const sleep = (ms: number) =>
+          new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, ms);
+            controller.signal.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(t);
+                resolve();
+              },
+              { once: true },
+            );
+          });
+
+        while (!controller.signal.aborted) {
+          try {
+            const logPath = await deps.resolveLogPath();
+            if (logPath) {
+              const file = await provider.downloadTextFile(providerId(server), logPath, 512 * 1024);
+              const totalBytes =
+                file.totalSizeBytes ?? file.contentStartOffset + file.content.length;
+
+              let newContent: string;
+              if (lastTotalBytes === 0 || totalBytes < lastTotalBytes) {
+                // First poll or log rotated — send all available content.
+                newContent = file.content;
+              } else {
+                const skip = Math.max(0, lastTotalBytes - file.contentStartOffset);
+                newContent = file.content.slice(skip);
+              }
+              lastTotalBytes = totalBytes;
+
+              if (newContent) {
+                for (const line of newContent.split('\n')) {
+                  if (controller.signal.aborted) break;
+                  if (line) res.write(`data: ${JSON.stringify(line)}\n\n`);
+                }
+              }
+            }
+          } catch {
+            // Provider unreachable or no log yet — keep the connection alive.
+          }
+          await sleep(2000);
+        }
+
+        res.end();
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   router.get(
     '/:slug/logs/raw',
@@ -501,6 +600,77 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
         throw ApiError.notConfigured('Mod management requires a configured game server backend.');
       }
       res.json(await deps.mods.getMods(server));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/:slug/mods/check', async (req, res, next) => {
+    try {
+      const server = await loadServer(req.params.slug);
+      if (!deps.mods) {
+        throw ApiError.notConfigured('Mod management requires a configured game server backend.');
+      }
+      const { mods } = await deps.mods.getMods(server);
+      const installedIds = new Set(mods.map((m) => m.modId.toUpperCase()));
+
+      // Fetch workshop details for all installed mods in parallel.
+      const details = await Promise.allSettled(mods.map((mod) => deps.workshop.getMod(mod.modId)));
+
+      const modsWithMissingVersions: string[] = [];
+      const modsWithMissingDeps: ModDependencyIssue[] = [];
+
+      for (let i = 0; i < mods.length; i++) {
+        const mod = mods[i]!;
+        if (!mod.version) modsWithMissingVersions.push(mod.modId);
+        const result = details[i]!;
+        if (result.status === 'fulfilled') {
+          const missing = result.value.dependencies.filter(
+            (dep) => dep.id && !installedIds.has(dep.id.toUpperCase()),
+          );
+          if (missing.length > 0) {
+            modsWithMissingDeps.push({
+              modId: mod.modId,
+              modName: mod.name ?? result.value.name ?? null,
+              missing,
+            });
+          }
+        }
+      }
+
+      // Detect orphaned mission: configured scenarioId no longer available.
+      let orphanedMission: { scenarioId: string; name: string | null } | null = null;
+      const configData = deps.configSync
+        ? await deps.configSync.getLiveConfig(server).catch(() => null)
+        : null;
+      const scenarioId = configData?.scenarioId ?? null;
+
+      if (scenarioId) {
+        const knownScenarioIds = new Set([DEFAULT_SCENARIO_ID]);
+        const scenarioLookupComplete = details.every((result) => result.status === 'fulfilled');
+        for (const result of details) {
+          if (result.status === 'fulfilled') {
+            const mod = result.value;
+            if (!hasScenarioTag(mod.tags)) continue;
+            for (const s of mod.scenarios) {
+              knownScenarioIds.add(s.scenarioId);
+            }
+          }
+        }
+        if (scenarioLookupComplete && !knownScenarioIds.has(scenarioId)) {
+          orphanedMission = {
+            scenarioId,
+            name: null,
+          };
+        }
+      }
+
+      res.json({
+        modsWithMissingVersions,
+        modsWithMissingDeps,
+        orphanedMission,
+        checkedAt: new Date().toISOString(),
+      });
     } catch (error) {
       next(error);
     }

@@ -1,21 +1,17 @@
 import { useState } from 'react';
-import { useConfiguration, useMissions, useSetPerformanceSettings } from '../api/hooks.js';
+import { useConfiguration, useSetPerformanceSettings } from '../api/hooks.js';
 import { Button, Card, Spinner } from './ui.js';
 import { shortScenario } from './widgets.js';
 
-function missionSourceLabel(source: string): string {
-  if (source === 'official') return '';
-  if (source.startsWith('mod: ')) return `Mod: ${source.slice(5)}`;
-  return source;
-}
+const DEFAULT_SCENARIO_ID = '{FDE33AFE2ED7875B}Missions/23_Campaign_Montignac.conf';
+const DEFAULT_SCENARIO_NAME = 'Campaign - Montignac (default)';
 
 /**
- * Mission switcher. Options come from the scenario listing the server prints
- * at boot (requires the -listScenarios launch flag, standard on Reforger eggs).
+ * Mission editor. Scenario discovery through the Workshop API is not reliable
+ * enough for every mod, so the primary control is a manual scenario ID input.
  */
 export function MissionCard({ slug, canEdit }: { slug: string; canEdit: boolean }) {
   const { data: config, refetch } = useConfiguration(slug);
-  const { data: missions } = useMissions(slug);
   const save = useSetPerformanceSettings(slug);
   const [selected, setSelected] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -29,15 +25,13 @@ export function MissionCard({ slug, canEdit }: { slug: string; canEdit: boolean 
   }
 
   const current = config.config.scenarioId;
-  const currentName =
-    missions?.missions.find((m) => m.scenarioId === current)?.name ?? shortScenario(current);
   const value = selected ?? current;
   const dirty = value !== current;
 
-  const submit = () => {
+  const submit = (scenarioIdOverride?: string) => {
     setMessage(null);
     save.mutate(
-      { scenarioId: value },
+      { scenarioId: scenarioIdOverride ?? value },
       {
         onSuccess: () => {
           setSelected(null);
@@ -59,48 +53,51 @@ export function MissionCard({ slug, canEdit }: { slug: string; canEdit: boolean 
             <Button onClick={() => setSelected(null)} disabled={save.isPending}>
               Discard
             </Button>
-            <Button variant="accent" onClick={submit} disabled={save.isPending}>
+            <Button variant="accent" onClick={() => submit()} disabled={save.isPending}>
               {save.isPending ? 'Saving…' : 'Save to server'}
             </Button>
           </div>
         )
       }
     >
-      <div className="flex flex-wrap items-center gap-4">
+      <div className="space-y-4">
         <div className="min-w-0 flex-1">
-          <p className="text-lg font-medium text-zinc-100">{currentName}</p>
+          <p className="text-lg font-medium text-zinc-100">{shortScenario(current)}</p>
           <p className="truncate font-mono text-xs text-slate-dim" title={current}>
-            {shortScenario(current)}
+            {current}
           </p>
         </div>
-        {canEdit &&
-          (missions && missions.missions.length > 0 ? (
-            <select
+        {canEdit && (
+          <div className="grid gap-2">
+            <input
               value={value}
               onChange={(event) => {
                 setMessage(null);
                 setSelected(event.target.value);
               }}
-              className="input max-w-xs"
-            >
-              {!missions.missions.some((m) => m.scenarioId === current) && (
-                <option value={current}>{currentName} (current)</option>
-              )}
-              {missions.missions.map((mission) => (
-                <option key={mission.scenarioId} value={mission.scenarioId}>
-                  {mission.name}
-                  {missionSourceLabel(mission.source)
-                    ? ` [${missionSourceLabel(mission.source)}]`
-                    : ''}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <p className="text-xs text-slate-dim">
-              No scenario listing found in the current log — make sure the server runs with
-              -listScenarios and has booted recently.
-            </p>
-          ))}
+              placeholder="{FDE33AFE2ED7875B}Missions/23_Campaign_Montignac.conf"
+              className="input w-full font-mono text-xs"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                onClick={() => {
+                  setMessage(null);
+                  setSelected(DEFAULT_SCENARIO_ID);
+                }}
+                disabled={save.isPending}
+              >
+                Use {DEFAULT_SCENARIO_NAME}
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => submit(DEFAULT_SCENARIO_ID)}
+                disabled={save.isPending || current === DEFAULT_SCENARIO_ID}
+              >
+                {save.isPending ? 'Saving…' : 'Reset to default'}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
       {message && <p className="mt-3 text-xs text-accent-400">{message}</p>}
     </Card>

@@ -145,15 +145,15 @@ export type ConfigurationResponse = {
 
 export type MissionInfo = {
   scenarioId: string;
-  /** Display name from the startup scenario listing, e.g. "Conflict - Everon". */
+  /** Display name for the scenario, e.g. "Campaign - Montignac". */
   name: string;
-  /** 'official' or the source section header from the log. */
+  /** 'official' or a mod source such as "mod: Scenario Pack". */
   source: string;
 };
 
 export type MissionsResponse = {
   missions: MissionInfo[];
-  /** Null when the current log contains no scenario listing. */
+  /** Null when the source could not be checked. */
   fetchedAt: string | null;
 };
 
@@ -236,6 +236,8 @@ export type ResourceSample = {
   cpuLimitPercent: number | null;
   memoryBytes: number;
   memoryLimitBytes: number | null;
+  diskBytes: number;
+  diskLimitBytes: number | null;
   /** Bytes per second, derived from consecutive cumulative counters. */
   networkRxRate: number;
   networkTxRate: number;
@@ -297,6 +299,20 @@ export type ServerModsResponse = {
   fetchedAt: string;
 };
 
+export type ModDependencyIssue = {
+  modId: string;
+  modName: string | null;
+  missing: Array<{ id: string | null; name: string }>;
+};
+
+export type ModsCheckResponse = {
+  modsWithMissingVersions: string[];
+  modsWithMissingDeps: ModDependencyIssue[];
+  /** Non-null when the server's configured scenarioId is not in any known mission source. */
+  orphanedMission: { scenarioId: string; name: string | null } | null;
+  checkedAt: string;
+};
+
 export type UpdateModsResult = ServerModsResponse & {
   added: number;
   removed: number;
@@ -321,6 +337,9 @@ export type WorkshopModPreview = {
   size: string | null;
   rating: string | null;
   workshopUrl: string | null;
+  version: string | null;
+  summary: string | null;
+  tags: string[];
 };
 
 export type WorkshopSearchResponse = {
