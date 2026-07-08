@@ -135,12 +135,14 @@ export function Button({
   disabled,
   variant = 'default',
   title,
+  type = 'button',
 }: {
   children: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
   variant?: 'default' | 'accent' | 'danger';
   title?: string;
+  type?: 'button' | 'submit';
 }) {
   const variants = {
     default:
@@ -150,7 +152,7 @@ export function Button({
   } as const;
   return (
     <button
-      type="button"
+      type={type}
       title={title}
       onClick={onClick}
       disabled={disabled}

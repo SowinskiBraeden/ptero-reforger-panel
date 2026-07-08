@@ -236,7 +236,7 @@ function WorkshopBrowser({
             </option>
           ))}
         </select>
-        <Button variant="accent" disabled={isFetching}>
+        <Button variant="accent" type="submit" disabled={isFetching}>
           {isFetching ? 'Loading…' : 'Search'}
         </Button>
       </form>
