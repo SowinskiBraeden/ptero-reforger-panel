@@ -45,6 +45,7 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
   const save = useSetServerMods(slug);
   const [draft, setDraft] = useState<ReforgerConfigMod[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [selectedModId, setSelectedModId] = useState<string | null>(null);
 
   const serverMods = data?.mods ?? [];
   const mods = draft ?? serverMods;
@@ -135,11 +136,14 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
                     {mod.version ? ` · v${mod.version}` : ' · latest version'}
                   </p>
                 </div>
-                {canManage && (
-                  <Button variant="danger" onClick={() => removeMod(mod.modId)}>
-                    Remove
-                  </Button>
-                )}
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button onClick={() => setSelectedModId(mod.modId)}>View</Button>
+                  {canManage && (
+                    <Button variant="danger" onClick={() => removeMod(mod.modId)}>
+                      Remove
+                    </Button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
@@ -151,7 +155,13 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
         </p>
       </Card>
 
-      <WorkshopBrowser canManage={canManage} installedIds={installedIds} onAdd={addMod} />
+      <WorkshopBrowser
+        canManage={canManage}
+        installedIds={installedIds}
+        onAdd={addMod}
+        selectedModId={selectedModId}
+        setSelectedModId={setSelectedModId}
+      />
     </div>
   );
 }
@@ -160,17 +170,20 @@ function WorkshopBrowser({
   canManage,
   installedIds,
   onAdd,
+  selectedModId,
+  setSelectedModId,
 }: {
   canManage: boolean;
   installedIds: Set<string>;
   onAdd: (mod: ReforgerConfigMod) => void;
+  selectedModId: string | null;
+  setSelectedModId: (id: string | null) => void;
 }) {
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [sort, setSort] = useState<(typeof WORKSHOP_SORTS)[number]['value']>('popularity');
   const [page, setPage] = useState(1);
-  const [selectedModId, setSelectedModId] = useState<string | null>(null);
   const [addingId, setAddingId] = useState<string | null>(null);
   const effectiveQuery = [query, activeTag].filter(Boolean).join(' ');
   const { data, isFetching, error } = useWorkshopSearch(effectiveQuery, page, sort);
@@ -352,6 +365,24 @@ function ModDetailPanel({
   onTagSelect: (tag: string) => void;
 }) {
   const { data: mod, isLoading } = useWorkshopMod(modId);
+  const [addingDepId, setAddingDepId] = useState<string | null>(null);
+
+  const addDep = async (depId: string, depName: string) => {
+    setAddingDepId(depId);
+    try {
+      const detail = await api.get<WorkshopModDetail>(`/api/workshop/mods/${depId}`);
+      onAdd({
+        modId: detail.id,
+        name: detail.name || depName,
+        ...(detail.version ? { version: detail.version } : {}),
+      });
+    } catch {
+      onAdd({ modId: depId, name: depName });
+    } finally {
+      setAddingDepId(null);
+    }
+  };
+
   if (!modId) {
     return (
       <div className="rounded-md border border-dashed border-graphite-700 bg-graphite-950/20 p-6">
@@ -393,13 +424,33 @@ function ModDetailPanel({
       )}
       {mod.dependencies.length > 0 && (
         <div className="mt-3">
-          <p className="text-xs uppercase tracking-wider text-warn-400">
-            Dependencies (add these too)
-          </p>
-          <ul className="mt-1 space-y-0.5 text-sm text-zinc-300">
-            {mod.dependencies.map((dep) => (
-              <li key={dep.id ?? dep.name}>{dep.name}</li>
-            ))}
+          <p className="mb-1 text-xs uppercase tracking-wider text-warn-400">Dependencies</p>
+          <ul className="space-y-1">
+            {mod.dependencies.map((dep) => {
+              const depInstalled = dep.id ? installedIds.has(dep.id.toUpperCase()) : false;
+              return (
+                <li
+                  key={dep.id ?? dep.name}
+                  className="flex items-center justify-between gap-2 rounded border border-graphite-800 bg-graphite-950/20 px-2.5 py-1.5"
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-sm text-zinc-300">{dep.name}</span>
+                    {depInstalled && (
+                      <span className="shrink-0 text-xs text-accent-400">Installed</span>
+                    )}
+                  </span>
+                  {canManage && dep.id && !depInstalled && (
+                    <Button
+                      variant="accent"
+                      disabled={addingDepId === dep.id}
+                      onClick={() => dep.id && void addDep(dep.id, dep.name)}
+                    >
+                      {addingDepId === dep.id ? '…' : 'Add'}
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
