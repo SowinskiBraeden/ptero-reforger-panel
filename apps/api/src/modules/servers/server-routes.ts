@@ -526,7 +526,21 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
           throw ApiError.validation('Duplicate mod ids in the list.');
         }
 
-        const result = await deps.mods.setMods(server, body.data.mods);
+        // Reforger requires a version in config.json for each mod to load.
+        // Fetch it from the Workshop for any mod the caller didn't supply one for.
+        const enrichedMods = await Promise.all(
+          body.data.mods.map(async (mod) => {
+            if (mod.version) return mod;
+            try {
+              const detail = await deps.workshop.getMod(mod.modId);
+              return { ...mod, ...(detail.version ? { version: detail.version } : {}) };
+            } catch {
+              return mod;
+            }
+          }),
+        );
+
+        const result = await deps.mods.setMods(server, enrichedMods);
         const user = req.user!;
         await service.recordActivity({
           serverId: server.id,
