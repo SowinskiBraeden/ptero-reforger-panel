@@ -21,6 +21,7 @@ const FIELD_LOCATIONS: Record<
   disableThirdPerson: ['gameProperties', 'disableThirdPerson'],
   fastValidation: ['gameProperties', 'fastValidation'],
   battlEye: ['gameProperties', 'battlEye'],
+  disableAI: ['operating', 'disableAI'],
   aiLimit: ['operating', 'aiLimit'],
   playerSaveTime: ['operating', 'playerSaveTime'],
   slotReservationTimeout: ['operating', 'slotReservationTimeout'],

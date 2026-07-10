@@ -264,6 +264,7 @@ export type PerformanceSettings = {
   disableThirdPerson: boolean | null; // game.gameProperties (default false)
   fastValidation: boolean | null; // game.gameProperties (default true)
   battlEye: boolean | null; // game.gameProperties (default true)
+  disableAI: boolean | null; // operating (default false)
   aiLimit: number | null; // operating, -1 = unlimited (default -1)
   playerSaveTime: number | null; // operating, seconds (default 120)
   slotReservationTimeout: number | null; // operating, 5–300 s (default 60)

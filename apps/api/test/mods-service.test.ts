@@ -69,6 +69,7 @@ describe('ServerModsService', () => {
     expect(parsed.bindPort).toBe(2001);
     expect(parsed.game.name).toBe('Mock Reforger Server');
     expect(parsed.game.maxPlayers).toBe(16);
+    expect(parsed.operating.disableAI).toBe(false);
     expect(parsed.operating.aiLimit).toBe(40);
   });
 

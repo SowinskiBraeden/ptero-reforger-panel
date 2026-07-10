@@ -343,6 +343,7 @@ describe('performance config by role', () => {
     disableThirdPerson: null,
     fastValidation: null,
     battlEye: null,
+    disableAI: null,
     aiLimit: null,
     playerSaveTime: null,
     slotReservationTimeout: null,

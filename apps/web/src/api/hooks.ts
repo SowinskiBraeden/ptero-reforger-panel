@@ -235,7 +235,8 @@ export function useSetPerformanceSettings(slug: string) {
         `/api/servers/${slug}/config/performance`,
         settings,
       ),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      queryClient.setQueryData(['servers', slug, 'config', 'performance'], result);
       void queryClient.invalidateQueries({ queryKey: ['servers', slug] });
     },
   });

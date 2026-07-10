@@ -64,6 +64,7 @@ const performanceBodySchema = z
     disableThirdPerson: z.boolean().nullable(),
     fastValidation: z.boolean().nullable(),
     battlEye: z.boolean().nullable(),
+    disableAI: z.boolean().nullable(),
     aiLimit: z.number().int().min(-1).max(1000).nullable(),
     playerSaveTime: z.number().int().min(1).max(3600).nullable(),
     slotReservationTimeout: z.number().int().min(5).max(300).nullable(),

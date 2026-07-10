@@ -37,6 +37,7 @@ describe('PerformanceSettingsService', () => {
     // Present in the mock config.json:
     expect(settings.maxPlayers).toBe(16);
     expect(settings.serverMaxViewDistance).toBe(2500);
+    expect(settings.disableAI).toBe(false);
     expect(settings.aiLimit).toBe(40);
     expect(settings.disableThirdPerson).toBe(false);
     // Absent keys:
@@ -50,10 +51,11 @@ describe('PerformanceSettingsService', () => {
       ...settings,
       maxPlayers: 32,
       playerSaveTime: 180, // new key
+      disableAI: null,
       aiLimit: null, // remove key → game default
     });
 
-    expect(result.changedFields.sort()).toEqual(['aiLimit', 'maxPlayers', 'playerSaveTime']);
+    expect(result.changedFields.sort()).toEqual(['aiLimit', 'disableAI', 'maxPlayers', 'playerSaveTime']);
     expect(result.requiresRestart).toBe(true);
 
     const written = JSON.parse(provider.writtenFiles.get('/config.json')!);

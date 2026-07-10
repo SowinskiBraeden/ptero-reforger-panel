@@ -126,7 +126,7 @@ export class MockGameServerProvider implements GameServerProvider {
           },
           mods: [{ modId: '591AF5BDA9F7CE8B', name: 'Mock Sample Mod', version: '1.0.2' }],
         },
-        operating: { aiLimit: 40 },
+        operating: { disableAI: false, aiLimit: 40 },
       },
       null,
       2,
