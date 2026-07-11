@@ -285,7 +285,8 @@ export function useSetServerMods(slug: string) {
   return useMutation({
     mutationFn: (mods: ReforgerConfigMod[]) =>
       api.put<UpdateModsResult>(`/api/servers/${slug}/mods`, { mods }),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      queryClient.setQueryData(['servers', slug, 'mods'], result);
       void queryClient.invalidateQueries({ queryKey: ['servers', slug] });
     },
   });

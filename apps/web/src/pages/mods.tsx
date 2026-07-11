@@ -5,6 +5,7 @@ import type {
   ModDependencyIssue,
   ModsCheckResponse,
   ReforgerConfigMod,
+  UpdateModsResult,
   WorkshopModDetail,
   WorkshopModPreview,
 } from '@reforger-panel/shared';
@@ -48,6 +49,8 @@ const WORKSHOP_DETAIL_BATCH_SIZE = 4;
 const WORKSHOP_DETAIL_BURST_CAPACITY = 20;
 const WORKSHOP_DETAIL_FAILURE_COOLDOWN_MS = 60_000;
 const WORKSHOP_DETAIL_PREFETCH_MARGIN = '500px';
+const MODS_AUTOSAVE_DEBOUNCE_MS = 1_500;
+const UPGRADE_ALL_DETAIL_BATCH_SIZE = 8;
 
 const workshopDetailLimiter = {
   inFlight: false,
@@ -67,6 +70,7 @@ function sameMods(a: ReforgerConfigMod[], b: ReforgerConfigMod[]): boolean {
 }
 
 type ModsTab = 'installed' | 'browse';
+type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 
 const DEFAULT_SCENARIO_ID = '{FDE33AFE2ED7875B}Missions/23_Campaign_Montignac.conf';
 
@@ -76,7 +80,7 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
   const { data, isLoading, error, refetch } = useServerMods(slug);
   const { data: configData } = useConfiguration(slug);
   const currentScenarioId = configData?.config.scenarioId ?? null;
-  const save = useSetServerMods(slug);
+  const { mutate: saveMutate, isPending: isSavingMods } = useSetServerMods(slug);
   const savePerf = useSetPerformanceSettings(slug);
   const [draft, setDraft] = useState<ReforgerConfigMod[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -84,14 +88,63 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
   const [selectedModId, setSelectedModId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ModsTab>('installed');
   const [checkEnabled, setCheckEnabled] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [isUpgradingAll, setIsUpgradingAll] = useState(false);
   const checkQuery = useServerModsCheck(slug, checkEnabled);
 
   const serverMods = data?.mods ?? [];
   const mods = draft ?? serverMods;
+  const modsKey = useMemo(() => JSON.stringify(mods), [mods]);
+  const modsRef = useRef(mods);
+  modsRef.current = mods;
   const dirty = draft !== null && !sameMods(draft, serverMods);
   const installedIds = new Set(mods.map((mod) => mod.modId.toUpperCase()));
 
   const missingVersionIds = new Set(mods.filter((m) => !m.version).map((m) => m.modId));
+
+  const submitMods = useCallback(
+    (
+      submittedMods: ReforgerConfigMod[],
+      getSuccessMessage: (result: UpdateModsResult, currentSaved: boolean) => string,
+      source: 'manual' | 'auto' = 'manual',
+    ) => {
+      setMessage(null);
+      setSaveStatus('saving');
+      saveMutate(submittedMods, {
+        onSuccess: (result) => {
+          const currentSaved = sameMods(modsRef.current, submittedMods);
+          if (currentSaved) setDraft(null);
+          setSaveStatus(currentSaved ? 'saved' : 'pending');
+          setMessage(getSuccessMessage(result, currentSaved));
+          setCheckEnabled(false);
+          void refetch();
+        },
+        onError: (saveError) => {
+          setSaveStatus('error');
+          setMessage(
+            source === 'auto' ? `Autosave failed: ${saveError.message}` : saveError.message,
+          );
+        },
+      });
+    },
+    [refetch, saveMutate],
+  );
+
+  useEffect(() => {
+    if (!canManage || !dirty || isSavingMods || isLoading) return;
+    setSaveStatus('pending');
+    const timer = window.setTimeout(() => {
+      submitMods(
+        modsRef.current,
+        (result, currentSaved) =>
+          currentSaved
+            ? `Autosaved — ${result.added} added, ${result.removed} removed. Restart to apply.`
+            : 'Autosaved. More changes pending.',
+        'auto',
+      );
+    }, MODS_AUTOSAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [canManage, dirty, isLoading, isSavingMods, modsKey, submitMods]);
 
   const addMod = (mod: ReforgerConfigMod) => {
     if (installedIds.has(mod.modId.toUpperCase())) return;
@@ -128,28 +181,60 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
   };
 
   const saveMods = () => {
-    setMessage(null);
-    save.mutate(mods, {
-      onSuccess: (result) => {
-        setDraft(null);
-        setMessage(`Saved — ${result.added} added, ${result.removed} removed. Restart to apply.`);
-        setCheckEnabled(false);
-        void refetch();
-      },
-      onError: (saveError) => setMessage(saveError.message),
-    });
+    submitMods(mods, (result, currentSaved) =>
+      currentSaved
+        ? `Saved — ${result.added} added, ${result.removed} removed. Restart to apply.`
+        : 'Saved. More changes pending.',
+    );
   };
 
   const patchVersions = () => {
+    submitMods(mods, (_result, currentSaved) =>
+      currentSaved
+        ? 'Version info patched. Restart to apply.'
+        : 'Version info patched. More changes pending.',
+    );
+  };
+
+  const upgradeAllVersions = async () => {
+    if (!canManage || isUpgradingAll || isSavingMods || mods.length === 0) return;
+
+    setIsUpgradingAll(true);
     setMessage(null);
-    save.mutate(mods, {
-      onSuccess: () => {
-        setDraft(null);
-        setMessage('Version info patched. Restart to apply.');
-        void refetch();
-      },
-      onError: (saveError) => setMessage(saveError.message),
-    });
+    try {
+      const details = await fetchWorkshopDetailsForMods(mods);
+      let changed = 0;
+      let foundVersions = 0;
+      const upgraded = mods.map((mod) => {
+        const detail = details.get(mod.modId.toUpperCase());
+        if (!detail?.version) return mod;
+        foundVersions += 1;
+        if (mod.version === detail.version) return mod;
+        changed += 1;
+        return {
+          ...mod,
+          name: mod.name ?? detail.name,
+          version: detail.version,
+        };
+      });
+
+      if (changed === 0) {
+        setMessage(
+          foundVersions === 0
+            ? 'No workshop version info was available for the installed mods.'
+            : 'All installed mods are already on the latest known versions.',
+        );
+        return;
+      }
+
+      setDraft(upgraded);
+      setSaveStatus('pending');
+      setMessage(
+        `Updated ${changed} version number${changed === 1 ? '' : 's'}. Autosave will write the changes shortly.`,
+      );
+    } finally {
+      setIsUpgradingAll(false);
+    }
   };
 
   const resetMission = () => {
@@ -210,7 +295,9 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
             canManage={canManage}
             canEditConfig={canEditConfig}
             dirty={dirty}
-            isSaving={save.isPending}
+            isSaving={isSavingMods}
+            saveStatus={saveStatus}
+            isUpgradingAll={isUpgradingAll}
             isResettingMission={savePerf.isPending}
             missingVersionIds={missingVersionIds}
             selectedModId={selectedModId}
@@ -230,8 +317,10 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
             onDiscard={() => {
               setDraft(null);
               setMessage(null);
+              setSaveStatus('idle');
             }}
             onPatchVersions={patchVersions}
+            onUpgradeAll={upgradeAllVersions}
             onCheckDeps={runCheck}
             onAddMods={addMods}
             onResetMission={resetMission}
@@ -276,6 +365,26 @@ async function addAllDeps(
     .filter((r): r is PromiseFulfilledResult<ReforgerConfigMod> => r.status === 'fulfilled')
     .map((r) => r.value);
   addMods(mods);
+}
+
+async function fetchWorkshopDetailsForMods(
+  mods: ReforgerConfigMod[],
+): Promise<Map<string, WorkshopModDetail>> {
+  const details = new Map<string, WorkshopModDetail>();
+
+  for (let i = 0; i < mods.length; i += UPGRADE_ALL_DETAIL_BATCH_SIZE) {
+    const batch = mods.slice(i, i + UPGRADE_ALL_DETAIL_BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map((mod) => api.get<WorkshopModDetail>(`/api/workshop/mods/${mod.modId}`)),
+    );
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        details.set(result.value.id.toUpperCase(), result.value);
+      }
+    }
+  }
+
+  return details;
 }
 
 function workshopModQueryKey(modId: string) {
@@ -379,6 +488,8 @@ function InstalledModsPanel({
   canEditConfig,
   dirty,
   isSaving,
+  saveStatus,
+  isUpgradingAll,
   isResettingMission,
   missingVersionIds,
   selectedModId,
@@ -397,6 +508,7 @@ function InstalledModsPanel({
   onSave,
   onDiscard,
   onPatchVersions,
+  onUpgradeAll,
   onCheckDeps,
   onAddMods,
   onResetMission,
@@ -406,6 +518,8 @@ function InstalledModsPanel({
   canEditConfig: boolean;
   dirty: boolean;
   isSaving: boolean;
+  saveStatus: SaveStatus;
+  isUpgradingAll: boolean;
   isResettingMission: boolean;
   missingVersionIds: Set<string>;
   selectedModId: string | null;
@@ -424,6 +538,7 @@ function InstalledModsPanel({
   onSave: () => void;
   onDiscard: () => void;
   onPatchVersions: () => void;
+  onUpgradeAll: () => void;
   onCheckDeps: () => void;
   onAddMods: (mods: ReforgerConfigMod[]) => void;
   onResetMission: () => void;
@@ -467,17 +582,36 @@ function InstalledModsPanel({
       title={`Installed Mods${mods.length > 0 ? ` (${mods.length})` : ''}`}
       action={
         <div className="flex flex-wrap items-center justify-end gap-2">
-          {!dirty && fetchedAt && (
+          {canManage && mods.length > 0 && (
+            <Button
+              variant="accent"
+              onClick={onUpgradeAll}
+              disabled={isSaving || isUpgradingAll}
+              title="Fetch the latest Workshop version for every installed mod"
+            >
+              {isUpgradingAll ? 'Upgrading…' : 'Upgrade all'}
+            </Button>
+          )}
+          {saveStatus === 'pending' && (
+            <span className="text-xs text-warn-400">autosave pending</span>
+          )}
+          {saveStatus === 'saving' && <span className="text-xs text-slate-dim">saving…</span>}
+          {saveStatus === 'saved' && !dirty && (
+            <span className="text-xs text-accent-400">autosaved</span>
+          )}
+          {saveStatus === 'error' && (
+            <span className="text-xs text-danger-400">autosave failed</span>
+          )}
+          {!dirty && saveStatus !== 'saved' && fetchedAt && (
             <span className="text-xs text-slate-dim">fetched {formatRelativeTime(fetchedAt)}</span>
           )}
           {dirty && (
             <>
-              <span className="text-xs text-warn-400">unsaved changes</span>
               <Button onClick={onDiscard} disabled={isSaving}>
                 Discard
               </Button>
               <Button variant="accent" onClick={onSave} disabled={isSaving}>
-                {isSaving ? 'Saving…' : 'Save'}
+                {isSaving ? 'Saving…' : 'Save now'}
               </Button>
             </>
           )}
