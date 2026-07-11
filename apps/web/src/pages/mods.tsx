@@ -50,7 +50,6 @@ const WORKSHOP_DETAIL_BURST_CAPACITY = 20;
 const WORKSHOP_DETAIL_FAILURE_COOLDOWN_MS = 60_000;
 const WORKSHOP_DETAIL_PREFETCH_MARGIN = '500px';
 const MODS_AUTOSAVE_DEBOUNCE_MS = 1_500;
-const UPGRADE_ALL_DETAIL_BATCH_SIZE = 8;
 
 const workshopDetailLimiter = {
   inFlight: false,
@@ -89,7 +88,6 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
   const [activeTab, setActiveTab] = useState<ModsTab>('installed');
   const [checkEnabled, setCheckEnabled] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
-  const [isUpgradingAll, setIsUpgradingAll] = useState(false);
   const checkQuery = useServerModsCheck(slug, checkEnabled);
 
   const serverMods = data?.mods ?? [];
@@ -196,45 +194,13 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
     );
   };
 
-  const upgradeAllVersions = async () => {
-    if (!canManage || isUpgradingAll || isSavingMods || mods.length === 0) return;
-
-    setIsUpgradingAll(true);
+  const applyKnownVersionUpgrades = (upgraded: ReforgerConfigMod[], changed: number) => {
     setMessage(null);
-    try {
-      const details = await fetchWorkshopDetailsForMods(mods);
-      let changed = 0;
-      let foundVersions = 0;
-      const upgraded = mods.map((mod) => {
-        const detail = details.get(mod.modId.toUpperCase());
-        if (!detail?.version) return mod;
-        foundVersions += 1;
-        if (mod.version === detail.version) return mod;
-        changed += 1;
-        return {
-          ...mod,
-          name: mod.name ?? detail.name,
-          version: detail.version,
-        };
-      });
-
-      if (changed === 0) {
-        setMessage(
-          foundVersions === 0
-            ? 'No workshop version info was available for the installed mods.'
-            : 'All installed mods are already on the latest known versions.',
-        );
-        return;
-      }
-
-      setDraft(upgraded);
-      setSaveStatus('pending');
-      setMessage(
-        `Updated ${changed} version number${changed === 1 ? '' : 's'}. Autosave will write the changes shortly.`,
-      );
-    } finally {
-      setIsUpgradingAll(false);
-    }
+    setDraft(upgraded);
+    setSaveStatus('pending');
+    setMessage(
+      `Updated ${changed} known version number${changed === 1 ? '' : 's'}. Autosave will write the changes shortly.`,
+    );
   };
 
   const resetMission = () => {
@@ -297,7 +263,6 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
             dirty={dirty}
             isSaving={isSavingMods}
             saveStatus={saveStatus}
-            isUpgradingAll={isUpgradingAll}
             isResettingMission={savePerf.isPending}
             missingVersionIds={missingVersionIds}
             selectedModId={selectedModId}
@@ -320,7 +285,7 @@ function ModsBody({ slug, user }: { slug: string; user: CurrentUser }) {
               setSaveStatus('idle');
             }}
             onPatchVersions={patchVersions}
-            onUpgradeAll={upgradeAllVersions}
+            onUpgradeAll={applyKnownVersionUpgrades}
             onCheckDeps={runCheck}
             onAddMods={addMods}
             onResetMission={resetMission}
@@ -365,26 +330,6 @@ async function addAllDeps(
     .filter((r): r is PromiseFulfilledResult<ReforgerConfigMod> => r.status === 'fulfilled')
     .map((r) => r.value);
   addMods(mods);
-}
-
-async function fetchWorkshopDetailsForMods(
-  mods: ReforgerConfigMod[],
-): Promise<Map<string, WorkshopModDetail>> {
-  const details = new Map<string, WorkshopModDetail>();
-
-  for (let i = 0; i < mods.length; i += UPGRADE_ALL_DETAIL_BATCH_SIZE) {
-    const batch = mods.slice(i, i + UPGRADE_ALL_DETAIL_BATCH_SIZE);
-    const results = await Promise.allSettled(
-      batch.map((mod) => api.get<WorkshopModDetail>(`/api/workshop/mods/${mod.modId}`)),
-    );
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        details.set(result.value.id.toUpperCase(), result.value);
-      }
-    }
-  }
-
-  return details;
 }
 
 function workshopModQueryKey(modId: string) {
@@ -489,7 +434,6 @@ function InstalledModsPanel({
   dirty,
   isSaving,
   saveStatus,
-  isUpgradingAll,
   isResettingMission,
   missingVersionIds,
   selectedModId,
@@ -519,7 +463,6 @@ function InstalledModsPanel({
   dirty: boolean;
   isSaving: boolean;
   saveStatus: SaveStatus;
-  isUpgradingAll: boolean;
   isResettingMission: boolean;
   missingVersionIds: Set<string>;
   selectedModId: string | null;
@@ -538,7 +481,7 @@ function InstalledModsPanel({
   onSave: () => void;
   onDiscard: () => void;
   onPatchVersions: () => void;
-  onUpgradeAll: () => void;
+  onUpgradeAll: (upgraded: ReforgerConfigMod[], changed: number) => void;
   onCheckDeps: () => void;
   onAddMods: (mods: ReforgerConfigMod[]) => void;
   onResetMission: () => void;
@@ -562,6 +505,23 @@ function InstalledModsPanel({
     installedModIds,
     visibleModIds,
   );
+  const knownVersionUpgrades = useMemo(() => {
+    let changed = 0;
+    let knownVersions = 0;
+    const upgraded = mods.map((mod) => {
+      const detail = detailByModId.get(mod.modId.toUpperCase());
+      if (!detail?.version) return mod;
+      knownVersions += 1;
+      if (mod.version === detail.version) return mod;
+      changed += 1;
+      return {
+        ...mod,
+        name: mod.name ?? detail.name,
+        version: detail.version,
+      };
+    });
+    return { changed, knownVersions, upgraded };
+  }, [detailByModId, mods]);
   const handleInstalledModVisibility = useCallback((modId: string, visible: boolean) => {
     setVisibleModIds((current) => {
       const next = new Set(current);
@@ -585,11 +545,19 @@ function InstalledModsPanel({
           {canManage && mods.length > 0 && (
             <Button
               variant="accent"
-              onClick={onUpgradeAll}
-              disabled={isSaving || isUpgradingAll}
-              title="Fetch the latest Workshop version for every installed mod"
+              onClick={() =>
+                onUpgradeAll(knownVersionUpgrades.upgraded, knownVersionUpgrades.changed)
+              }
+              disabled={isSaving || knownVersionUpgrades.changed === 0}
+              title={
+                knownVersionUpgrades.changed > 0
+                  ? `Upgrade ${knownVersionUpgrades.changed} mod${knownVersionUpgrades.changed === 1 ? '' : 's'} with known newer versions`
+                  : knownVersionUpgrades.knownVersions > 0
+                    ? 'No loaded mods have newer known versions'
+                    : 'No loaded Workshop version info yet'
+              }
             >
-              {isUpgradingAll ? 'Upgrading…' : 'Upgrade all'}
+              Upgrade all
             </Button>
           )}
           {saveStatus === 'pending' && (
