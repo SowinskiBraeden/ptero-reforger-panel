@@ -54,9 +54,13 @@ function Dashboard({ user, slug }: { user: CurrentUser; slug: string }) {
   const memoryLimit = resources?.memoryLimitBytes ?? samples?.at(-1)?.memoryLimitBytes ?? null;
   const cpuLimit = resources?.cpuLimitPercent ?? samples?.at(-1)?.cpuLimitPercent ?? 100;
 
+  const diskUsed = resources?.diskBytes ?? null;
+  const diskLimit = resources?.diskLimitBytes ?? null;
+  const diskPercent = diskUsed !== null && diskLimit ? (diskUsed / diskLimit) * 100 : null;
+
   return (
     <div className="w-full space-y-5">
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card title="CPU">
           <p className="text-2xl font-semibold text-zinc-100">
             {resources ? `${resources.cpuPercent.toFixed(0)}%` : '—'}
@@ -126,6 +130,33 @@ function Dashboard({ user, slug }: { user: CurrentUser; slug: string }) {
               },
             ]}
           />
+        </Card>
+        <Card title="Storage">
+          <p className="text-2xl font-semibold text-zinc-100">
+            {diskUsed !== null ? formatBytes(diskUsed) : '—'}
+            <span className="text-sm font-normal text-slate-dim">
+              {diskLimit ? ` / ${formatBytes(diskLimit)}` : ''}
+            </span>
+          </p>
+          {diskPercent !== null && (
+            <div className="mt-3">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-graphite-800">
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{
+                    width: `${Math.min(100, diskPercent).toFixed(1)}%`,
+                    backgroundColor:
+                      diskPercent > 90
+                        ? 'var(--color-danger-400)'
+                        : diskPercent > 75
+                          ? 'var(--color-warn-400)'
+                          : '#a3e635',
+                  }}
+                />
+              </div>
+              <p className="mt-1 text-xs text-slate-dim">{diskPercent.toFixed(1)}% used</p>
+            </div>
+          )}
         </Card>
       </div>
 

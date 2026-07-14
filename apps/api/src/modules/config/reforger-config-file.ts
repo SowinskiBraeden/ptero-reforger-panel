@@ -52,6 +52,7 @@ export function mapReforgerConfig(raw: unknown): ReforgerServerConfig {
     serverName: str(game.name, 'Unnamed server'),
     maxPlayers: num(game.maxPlayers, 0),
     scenarioId: str(game.scenarioId),
+    disableAI: bool(operating.disableAI, false),
     // -1 means "no limit" in Reforger's operating.aiLimit.
     aiLimit: num(operating.aiLimit, -1),
     serverMaxViewDistance: num(gameProperties.serverMaxViewDistance, 0),

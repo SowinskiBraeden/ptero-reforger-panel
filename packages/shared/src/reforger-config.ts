@@ -13,6 +13,7 @@ export type ReforgerServerConfig = {
   serverName: string;
   maxPlayers: number;
   scenarioId: string;
+  disableAI: boolean;
   aiLimit: number;
   serverMaxViewDistance: number;
   networkViewDistance: number;

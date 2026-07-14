@@ -11,7 +11,7 @@ const REAL_SHAPE = {
   a2s: { address: '0.0.0.0', port: 17777 },
   rcon: { address: '127.0.0.1', port: 19999, password: 'hunter2', permission: 'admin' },
   game: {
-    name: 'DazzledCorp Training Grounds',
+    name: 'DZR Training Grounds',
     password: '',
     passwordAdmin: 'secret',
     admins: ['76561198000000000'],
@@ -34,7 +34,12 @@ const REAL_SHAPE = {
       { modId: '5AAF0CCE3F001FB5' },
     ],
   },
-  operating: { lobbyPlayerSynchronise: true, aiLimit: -1, playerSaveTime: 120 },
+  operating: {
+    lobbyPlayerSynchronise: true,
+    disableAI: false,
+    aiLimit: -1,
+    playerSaveTime: 120
+  },
 };
 
 describe('parseReforgerConfigJson', () => {
@@ -44,6 +49,7 @@ describe('parseReforgerConfigJson', () => {
       serverName: 'DazzledCorp Training Grounds',
       maxPlayers: 16,
       scenarioId: '{ECC61978EDCC2B5A}Missions/23_Campaign.conf',
+      disableAI: false,
       aiLimit: -1,
       serverMaxViewDistance: 2500,
       networkViewDistance: 1000,
@@ -66,6 +72,7 @@ describe('parseReforgerConfigJson', () => {
     const config = parseReforgerConfigJson('{"game":{"name":"Bare"}}');
     expect(config.serverName).toBe('Bare');
     expect(config.maxPlayers).toBe(0);
+    expect(config.disableAI).toBe(false);
     expect(config.aiLimit).toBe(-1);
     expect(config.mods).toEqual([]);
   });

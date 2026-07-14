@@ -42,7 +42,7 @@ function ConfigurationsBody({ slug, user }: { slug: string; user: CurrentUser })
       <h1 className="page-title">Configuration</h1>
       <MissionCard slug={slug} canEdit={canEdit} />
       <PerformanceForm slug={slug} canEdit={canEdit} />
-      <SchedulesCard slug={slug} canEdit={canEdit} />
+      {/*<SchedulesCard slug={slug} canEdit={canEdit} />*/}
       {canEdit && <StartupVarsCard slug={slug} />}
       <Card title="Full config summary (live from the server)">
         {config ? <ConfigSummaryRows config={config} /> : <Spinner />}

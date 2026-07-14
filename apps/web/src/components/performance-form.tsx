@@ -52,6 +52,7 @@ const NUMBER_FIELDS: { key: NumberKey; label: string; min: number; max: number; 
 ];
 
 const BOOLEAN_FIELDS: { key: BooleanKey; label: string; hint: string }[] = [
+  { key: 'disableAI', label: 'Disable AI', hint: 'default enabled' },
   { key: 'disableThirdPerson', label: 'Disable third person', hint: 'default disabled' },
   { key: 'fastValidation', label: 'Fast validation', hint: 'default enabled' },
   { key: 'battlEye', label: 'BattlEye', hint: 'default enabled' },

@@ -116,7 +116,7 @@ export class MockGameServerProvider implements GameServerProvider {
         bindPort: 2001,
         game: {
           name: 'Mock Reforger Server',
-          scenarioId: '{ECC61978EDCC2B5A}Missions/23_Campaign.conf',
+          scenarioId: '{FDE33AFE2ED7875B}Missions/23_Campaign_Montignac.conf',
           maxPlayers: 16,
           crossPlatform: true,
           gameProperties: {
@@ -126,7 +126,7 @@ export class MockGameServerProvider implements GameServerProvider {
           },
           mods: [{ modId: '591AF5BDA9F7CE8B', name: 'Mock Sample Mod', version: '1.0.2' }],
         },
-        operating: { aiLimit: 40 },
+        operating: { disableAI: false, aiLimit: 40 },
       },
       null,
       2,

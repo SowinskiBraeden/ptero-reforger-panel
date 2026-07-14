@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ActivityItem,
@@ -6,6 +7,7 @@ import type {
   InviteSummary,
   KillfeedEvent,
   MissionsResponse,
+  ModsCheckResponse,
   PerformanceSettingsPatch,
   PerformanceSettingsResponse,
   RawLogsResponse,
@@ -121,9 +123,33 @@ export function useMissions(slug: string) {
   return useQuery({
     queryKey: ['servers', slug, 'missions'],
     queryFn: () => api.get<MissionsResponse>(`/api/servers/${slug}/missions`),
-    staleTime: 5 * 60_000,
-    refetchOnWindowFocus: false,
+    staleTime: 60_000,
   });
+}
+
+/**
+ * Opens a persistent SSE connection to stream live console output line by line.
+ * `onLine` is called for each received line. The connection closes and re-opens
+ * automatically when the component unmounts or `slug` changes.
+ */
+export function useConsoleStream(slug: string, onLine: (line: string) => void, enabled: boolean) {
+  const onLineRef = useRef(onLine);
+  onLineRef.current = onLine;
+
+  useEffect(() => {
+    if (!enabled || !slug) return;
+    const es = new EventSource(`/api/servers/${slug}/logs/stream`, { withCredentials: true });
+    es.onmessage = (e: MessageEvent<string>) => {
+      try {
+        const line = JSON.parse(e.data) as string;
+        onLineRef.current(line);
+      } catch {
+        // ignore
+      }
+    };
+    es.onerror = () => es.close();
+    return () => es.close();
+  }, [slug, enabled]);
 }
 
 export function useRawLogs(slug: string, lines: number, autoRefresh: boolean, enabled: boolean) {
@@ -209,7 +235,8 @@ export function useSetPerformanceSettings(slug: string) {
         `/api/servers/${slug}/config/performance`,
         settings,
       ),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      queryClient.setQueryData(['servers', slug, 'config', 'performance'], result);
       void queryClient.invalidateQueries({ queryKey: ['servers', slug] });
     },
   });
@@ -258,9 +285,20 @@ export function useSetServerMods(slug: string) {
   return useMutation({
     mutationFn: (mods: ReforgerConfigMod[]) =>
       api.put<UpdateModsResult>(`/api/servers/${slug}/mods`, { mods }),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      queryClient.setQueryData(['servers', slug, 'mods'], result);
       void queryClient.invalidateQueries({ queryKey: ['servers', slug] });
     },
+  });
+}
+
+export function useServerModsCheck(slug: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['servers', slug, 'mods', 'check'],
+    queryFn: () => api.get<ModsCheckResponse>(`/api/servers/${slug}/mods/check`),
+    enabled,
+    staleTime: 2 * 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 

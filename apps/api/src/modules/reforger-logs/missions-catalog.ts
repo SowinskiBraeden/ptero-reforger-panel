@@ -4,6 +4,14 @@ import type { LogPathResolver } from './ingestion/log-path-resolver.js';
 
 const CATALOG_TTL_MS = 10 * 60 * 1000;
 const CATALOG_MAX_BYTES = 2 * 1024 * 1024;
+export const DEFAULT_SCENARIO_ID = '{FDE33AFE2ED7875B}Missions/23_Campaign_Montignac.conf';
+export const DEFAULT_MISSION: MissionInfo = {
+  scenarioId: DEFAULT_SCENARIO_ID,
+  name: 'Campaign - Montignac',
+  source: 'official',
+};
+
+const SCENARIO_TAGS = new Set(['scenario', 'scenario mp', 'scenario sp']);
 
 /**
  * Scenario listing printed at boot when the server runs with -listScenarios
@@ -43,6 +51,19 @@ export function scenariosFromWorkshopMod(mod: WorkshopModDetail): MissionInfo[] 
     name: scenario.name,
     source: `mod: ${mod.name}`,
   }));
+}
+
+function normalizeTag(tag: string): string {
+  return tag
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^scenarios\b/, 'scenario');
+}
+
+export function hasScenarioTag(tags: string[]): boolean {
+  return tags.some((tag) => SCENARIO_TAGS.has(normalizeTag(tag)));
 }
 
 export function mergeMissions(...groups: MissionInfo[][]): MissionInfo[] {
