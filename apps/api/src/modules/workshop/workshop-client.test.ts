@@ -60,6 +60,28 @@ describe('normalizeImageUrl', () => {
 });
 
 describe('WorkshopClient image enrichment', () => {
+  it('identifies panel traffic to the upstream API', async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+    });
+    const client = new WorkshopClient({
+      baseUrl: 'https://workshop.test',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await client.health();
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://workshop.test/v1/health',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'User-Agent': 'reforger.dzr.tools',
+          'X-API-Client': 'reforger.dzr.tools',
+        }),
+      }),
+    );
+  });
+
   it('warms list images from the detail endpoint in the background and caches them', async () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const path = String(url);

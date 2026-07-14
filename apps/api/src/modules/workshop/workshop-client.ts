@@ -106,6 +106,7 @@ function toPreview(mod: z.infer<typeof modPreviewSchema>): WorkshopModPreview {
 
 const IMAGE_CACHE_TTL_MS = 60 * 60 * 1000; // matches upstream's 1 h detail cache
 const IMAGE_FETCH_CONCURRENCY = 5;
+const CLIENT_IDENTITY = 'reforger.dzr.tools';
 
 export class WorkshopClient {
   private readonly baseUrl: string;
@@ -124,7 +125,11 @@ export class WorkshopClient {
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        headers: { Accept: 'application/json' },
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': CLIENT_IDENTITY,
+          'X-API-Client': CLIENT_IDENTITY,
+        },
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
