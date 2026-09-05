@@ -1,10 +1,13 @@
 import type { ReforgerServerConfig } from '@reforger-panel/shared';
 import { sanitizeErrorMessage, type Logger } from '../../lib/logger.js';
-import type { GameServerProvider } from '../pterodactyl/types.js';
 import type { ServerRecord, ServerService } from '../servers/server-service.js';
-import { parseReforgerConfigJson } from './reforger-config-file.js';
+import type { ConfigFileGateway } from './config-file-gateway.js';
+import { mapReforgerConfig } from './reforger-config-file.js';
 
-const CONFIG_MAX_BYTES = 256 * 1024;
+export type LiveConfig = {
+  config: ReforgerServerConfig;
+  revision: string;
+};
 
 export type ConfigSyncResult = {
   serverName: string;
@@ -13,30 +16,31 @@ export type ConfigSyncResult = {
 };
 
 /**
- * Reads the server's real config.json (via the provider, read-only) and keeps
- * the server row's name/maxPlayers in line with what the server actually
- * runs. Configuration is always served live; no revision history is kept.
+ * Reads the server's real config.json and keeps the server row's
+ * name/maxPlayers in line with what the server actually runs. Configuration is
+ * always served live; no revision history is kept.
+ *
+ * Reads go through the shared gateway so they queue behind in-flight writes
+ * and return the same content revision the editors use for conflict detection.
  */
 export class ConfigSyncService {
   constructor(
-    private readonly provider: GameServerProvider,
+    private readonly gateway: ConfigFileGateway,
     private readonly servers: ServerService,
     private readonly logger: Logger,
-    private readonly configPath: string,
   ) {}
 
-  async getLiveConfig(server: ServerRecord): Promise<ReforgerServerConfig> {
-    const providerServerId = server.pterodactylServerId ?? server.slug;
-    const file = await this.provider.downloadTextFile(
-      providerServerId,
-      this.configPath,
-      CONFIG_MAX_BYTES,
-    );
-    return parseReforgerConfigJson(file.content);
+  private providerId(server: ServerRecord): string {
+    return server.pterodactylServerId ?? server.slug;
+  }
+
+  async getLiveConfig(server: ServerRecord): Promise<LiveConfig> {
+    const document = await this.gateway.download(this.providerId(server));
+    return { config: mapReforgerConfig(document.root), revision: document.revision };
   }
 
   async sync(server: ServerRecord): Promise<ConfigSyncResult> {
-    const config = await this.getLiveConfig(server);
+    const { config } = await this.getLiveConfig(server);
     const maxPlayers = config.maxPlayers > 0 ? config.maxPlayers : null;
     if (server.name !== config.serverName || server.maxPlayers !== maxPlayers) {
       await this.servers.updateServerInfo(server.id, {

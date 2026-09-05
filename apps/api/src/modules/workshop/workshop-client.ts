@@ -1,108 +1,190 @@
 import { z } from 'zod';
 import type {
-  WorkshopHealth,
+  WorkshopDependency,
   WorkshopModDetail,
   WorkshopModPreview,
+  WorkshopModVersion,
+  WorkshopModVersionsResponse,
+  WorkshopScenario,
   WorkshopSearchResponse,
+  WorkshopServerModsResponse,
+  WorkshopServerSearchResponse,
+  WorkshopServerSummary,
+  WorkshopSort,
 } from '@reforger-panel/shared';
 import { ApiError } from '../../lib/errors.js';
-import { sanitizeErrorMessage } from '../../lib/logger.js';
 
 /**
- * Client for the public reforgermods.net Workshop metadata API.
- * Endpoint shapes follow https://reforgermods.net/?page=documentation/api:
- *   GET /v1/health
- *   GET /v1/mods/{page}?search={q}&sort={sort}
- *   GET /v1/mod/{mod_id}
- * Backend-only — the browser never talks to this host directly.
+ * Client for the reforgermods.net Workshop metadata API, v2.
+ * Endpoint shapes follow https://reforgermods.net/arma-reforger-mods-api/v2/:
+ *   GET /v2/mods?page&search&sort&tags&category
+ *   GET /v2/mods/{id}
+ *   GET /v2/mods/{id}/versions
+ *   GET /v2/mods/{id}/dependencies
+ *   GET /v2/mods/{id}/scenarios
+ *   GET /v2/servers?search&hasMods&perPage
+ *   GET /v2/servers/{id}/mods
+ *
+ * v2 returns typed values (byte counts, numeric ratings) and real scenario ids,
+ * so none of v1's string parsing is needed here. Backend-only — the browser
+ * never talks to this host directly. Caching and request pacing live in
+ * WorkshopCache; this class is a thin typed transport.
  */
 
+/** Identifies the panel to the upstream, as its docs request. */
+const CLIENT_NAME = 'reforger-panel';
+
+// ---------- upstream schemas ----------
+
 const modPreviewSchema = z.object({
-  name: z.string(),
-  author: z.string().catch('Unknown'),
-  imageURL: z.string().catch(''),
-  originalModURL: z.string().catch(''),
-  size: z.string().catch(''),
-  rating: z.string().catch(''),
-  ID: z.string(),
-  version: z.string().nullish(),
+  id: z.string(),
+  name: z.string().catch('Unknown mod'),
   summary: z.string().nullish(),
+  author: z.string().catch('Unknown'),
+  version: z.string().nullish(),
+  gameVersion: z.string().nullish(),
+  size: z.number().nullish(),
+  sizeFormatted: z.string().nullish(),
+  rating: z.number().nullish(),
+  ratingCount: z.number().nullish(),
+  subscriberCount: z.number().nullish(),
+  createdAt: z.string().nullish(),
+  updatedAt: z.string().nullish(),
+  obsolete: z.boolean().nullish(),
   tags: z.array(z.string()).catch([]),
+  imageUrl: z.string().nullish(),
+  workshopUrl: z.string().nullish(),
 });
 
 const searchResponseSchema = z.object({
-  status: z.string(),
-  meta: z.object({
-    totalPages: z.number().catch(1),
-    currentPage: z.number().catch(1),
-    totalMods: z.number().catch(0),
-  }),
+  meta: z
+    .object({
+      totalPages: z.number().catch(1),
+      currentPage: z.number().catch(1),
+      totalMods: z.number().catch(0),
+    })
+    .catch({ totalPages: 1, currentPage: 1, totalMods: 0 }),
   data: z.array(modPreviewSchema).catch([]),
 });
 
-const modDetailSchema = z.object({
-  name: z.string(),
-  author: z.string().catch('Unknown'),
-  originalModURL: z.string().catch(''),
-  imageURL: z.string().catch(''),
-  rating: z.string().catch(''),
-  version: z.string().nullish(),
-  gameVersion: z.string().nullish(),
-  size: z.string().catch(''),
-  subscribers: z.number().nullish(),
-  downloads: z.number().nullish(),
-  created: z.string().nullish(),
-  lastModified: z.string().nullish(),
+const dependencySchema = z.object({
   id: z.string(),
-  summary: z.string().nullish(),
+  name: z.string().catch('Unknown mod'),
+  version: z.string().nullish(),
+  size: z.number().nullish(),
+  published: z.boolean().nullish(),
+  private: z.boolean().nullish(),
+});
+
+const scenarioSchema = z.object({
+  name: z.string().catch('Unnamed scenario'),
+  gameId: z.string().nullish(),
+  gameMode: z.string().nullish(),
+  author: z.string().nullish(),
+  description: z.string().nullish(),
+  playerCount: z.number().nullish(),
+});
+
+const modDetailSchema = modPreviewSchema.extend({
   description: z.string().nullish(),
   license: z.string().nullish(),
-  tags: z.array(z.string()).catch([]),
-  dependencies: z.array(z.object({ name: z.string(), apiModURL: z.string().catch('') })).catch([]),
-  scenarios: z
+  downloadCount: z.number().nullish(),
+  previewImages: z.array(z.string()).catch([]),
+  screenshots: z.array(z.string()).catch([]),
+  versionCount: z.number().nullish(),
+  dependencyCount: z.number().nullish(),
+  scenarioCount: z.number().nullish(),
+  dependencySize: z.number().nullish(),
+  totalSize: z.number().nullish(),
+  dependencies: z.array(dependencySchema).catch([]),
+  scenarios: z.array(scenarioSchema).catch([]),
+});
+
+const modDetailEnvelopeSchema = z.object({ mod: modDetailSchema });
+
+const versionSchema = z.object({
+  version: z.string(),
+  gameVersion: z.string().nullish(),
+  size: z.number().nullish(),
+  sizeFormatted: z.string().nullish(),
+  approved: z.boolean().nullish(),
+  published: z.boolean().nullish(),
+  createdAt: z.string().nullish(),
+  scenarioCount: z.number().nullish(),
+  dependencyCount: z.number().nullish(),
+});
+
+const versionsEnvelopeSchema = z.object({
+  data: z.object({
+    modId: z.string().catch(''),
+    versions: z.array(versionSchema).catch([]),
+  }),
+});
+
+const dependenciesEnvelopeSchema = z.object({
+  data: z.object({
+    dependencies: z.array(dependencySchema).catch([]),
+  }),
+});
+
+const scenariosEnvelopeSchema = z.object({
+  data: z.object({
+    scenarios: z.array(scenarioSchema).catch([]),
+  }),
+});
+
+const serverSummarySchema = z.object({
+  id: z.string(),
+  name: z.string().catch('Unnamed server'),
+  scenarioId: z.string().nullish(),
+  scenarioName: z.string().nullish(),
+  gameVersion: z.string().nullish(),
+  players: z.number().catch(0),
+  maxPlayers: z.number().catch(0),
+  region: z.string().nullish(),
+  platform: z.string().nullish(),
+  modCount: z.number().catch(0),
+  official: z.boolean().nullish(),
+  online: z.boolean().nullish(),
+});
+
+const serverSearchEnvelopeSchema = z.object({
+  meta: z
+    .object({
+      totalPages: z.number().catch(1),
+      currentPage: z.number().catch(1),
+      totalServers: z.number().catch(0),
+    })
+    .catch({ totalPages: 1, currentPage: 1, totalServers: 0 }),
+  data: z.array(serverSummarySchema).catch([]),
+});
+
+const serverModsEnvelopeSchema = z.object({
+  serverId: z.string().catch(''),
+  summary: z
+    .object({
+      knownSize: z.number().nullish(),
+      unresolvedCount: z.number().nullish(),
+    })
+    .nullish(),
+  data: z
     .array(
       z.object({
-        name: z.string(),
-        description: z.string().catch(''),
-        scenarioID: z.string().catch(''),
-        gamemode: z.string().catch(''),
-        playerCount: z.number().catch(0),
-        imageURL: z.string().catch(''),
+        id: z.string(),
+        name: z.string().catch('Unknown mod'),
+        version: z.string().nullish(),
+        size: z.number().nullish(),
       }),
     )
     .catch([]),
 });
 
-const modDetailEnvelopeSchema = z.object({ status: z.string(), mod: modDetailSchema });
-
-export type WorkshopSort = 'popularity' | 'newest' | 'subscribers' | 'version_size';
-
-function extractModId(apiModUrl: string): string | null {
-  const match = /\/v1\/mod\/([^/?#]+)/.exec(apiModUrl);
-  return match?.[1] ?? null;
-}
-
-const SCENARIO_ID_PATTERN = /(\{[0-9a-fA-F]{16}\}[^\s,;)]*?\.conf)/;
-const SCENARIO_ID_WITH_LABEL_PATTERN =
-  /scenario\s*id\s*:?\s*\{[0-9a-fA-F]{16}\}[^\s,;)]*?\.conf/i;
-
-function extractScenarioId(...values: Array<string | null | undefined>): string {
-  for (const value of values) {
-    const match = value?.match(SCENARIO_ID_PATTERN);
-    if (match?.[1]) return match[1];
-  }
-  return '';
-}
-
-function cleanScenarioText(value: string | null | undefined): string | null {
-  const cleaned = value?.replace(SCENARIO_ID_WITH_LABEL_PATTERN, '').trim();
-  return cleaned || null;
-}
+// ---------- normalisation helpers ----------
 
 /**
- * Upstream image URLs need repair: list endpoints return dead
- * via.placeholder.com stubs, and detail endpoints sometimes concatenate two
- * URLs ("https://reforger.armaplatform.comhttps://ar-gcp-cdn...").
+ * Upstream image URLs still need repair: list endpoints occasionally return
+ * dead via.placeholder.com stubs, and some rows concatenate two URLs
+ * ("https://reforger.armaplatform.comhttps://ar-gcp-cdn...").
  */
 export function normalizeImageUrl(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -112,50 +194,162 @@ export function normalizeImageUrl(raw: string | null | undefined): string | null
   return candidate.startsWith('http') ? candidate : null;
 }
 
+/** Upstream reports 0 for "size unknown"; keep that distinct from "0 bytes". */
+function sizeOrNull(size: number | null | undefined): number | null {
+  return typeof size === 'number' && size > 0 ? size : null;
+}
+
+function text(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 function toPreview(mod: z.infer<typeof modPreviewSchema>): WorkshopModPreview {
   return {
-    id: mod.ID,
+    id: mod.id,
     name: mod.name,
     author: mod.author,
-    imageUrl: normalizeImageUrl(mod.imageURL),
-    size: mod.size || null,
-    rating: mod.rating || null,
-    workshopUrl: mod.originalModURL || null,
-    version: mod.version ?? null,
-    summary: mod.summary ?? null,
+    summary: text(mod.summary),
+    imageUrl: normalizeImageUrl(mod.imageUrl),
+    workshopUrl: text(mod.workshopUrl),
+    version: text(mod.version),
+    gameVersion: text(mod.gameVersion),
+    sizeBytes: sizeOrNull(mod.size),
+    sizeText: text(mod.sizeFormatted),
+    rating: typeof mod.rating === 'number' ? mod.rating : null,
+    ratingCount: mod.ratingCount ?? null,
+    subscriberCount: mod.subscriberCount ?? null,
+    createdAt: text(mod.createdAt),
+    updatedAt: text(mod.updatedAt),
     tags: mod.tags,
+    obsolete: mod.obsolete ?? false,
   };
 }
 
-const PREVIEW_CACHE_TTL_MS = 60 * 60 * 1000; // matches upstream's 1 h detail cache
+function toDependency(dep: z.infer<typeof dependencySchema>): WorkshopDependency {
+  return {
+    id: dep.id.toUpperCase(),
+    name: dep.name,
+    version: text(dep.version),
+    sizeBytes: sizeOrNull(dep.size),
+    published: dep.published ?? true,
+    private: dep.private ?? false,
+  };
+}
+
+/**
+ * Scenario `gameMode` / `description` are Enfusion localization keys such as
+ * `#AR-Scenario_GameMode_Campaign`. Map the ones that show up in practice and
+ * fall back to a readable form of the key rather than leaking `#AR-` at users.
+ */
+const GAME_MODE_LABELS: Record<string, string> = {
+  '#AR-Scenario_GameMode_Campaign': 'Campaign',
+  '#AR-Scenario_GameMode_Conflict': 'Conflict',
+  '#AR-Scenario_GameMode_CombatOps': 'Combat Ops',
+  '#AR-Scenario_GameMode_GameMaster': 'Game Master',
+  '#AR-Scenario_GameMode_Tutorial': 'Tutorial',
+  '#AR-ServerBrowser_ServerScenario': 'Scenario',
+  '#AR-Campaign_GamemodeDesc': 'Campaign',
+  '#AR-CombatScenario_Description': 'Combat Ops',
+};
+
+export function localizedLabel(value: string | null | undefined): string | null {
+  const raw = text(value);
+  if (!raw) return null;
+  if (!raw.startsWith('#')) return raw;
+  const mapped = GAME_MODE_LABELS[raw];
+  if (mapped) return mapped;
+  // "#AR-Scenario_GameMode_FooBar" -> "Foo Bar"
+  const tail =
+    raw
+      .replace(/^#[A-Za-z]+-/, '')
+      .split('_')
+      .pop() ?? raw;
+  const spaced = tail.replace(/([a-z0-9])([A-Z])/g, '$1 $2').trim();
+  return spaced || null;
+}
+
+function toScenario(scenario: z.infer<typeof scenarioSchema>): WorkshopScenario | null {
+  const scenarioId = text(scenario.gameId);
+  if (!scenarioId) return null;
+  return {
+    scenarioId,
+    name: scenario.name,
+    gameMode: localizedLabel(scenario.gameMode),
+    author: localizedLabel(scenario.author),
+    description: localizedLabel(scenario.description),
+    playerCount: scenario.playerCount && scenario.playerCount > 0 ? scenario.playerCount : null,
+  };
+}
+
+function toVersion(version: z.infer<typeof versionSchema>): WorkshopModVersion {
+  return {
+    version: version.version,
+    gameVersion: text(version.gameVersion),
+    sizeBytes: sizeOrNull(version.size),
+    sizeText: text(version.sizeFormatted),
+    approved: version.approved ?? true,
+    published: version.published ?? true,
+    createdAt: text(version.createdAt),
+    scenarioCount: version.scenarioCount ?? null,
+    dependencyCount: version.dependencyCount ?? null,
+  };
+}
+
+function toServerSummary(server: z.infer<typeof serverSummarySchema>): WorkshopServerSummary {
+  return {
+    id: server.id,
+    name: server.name,
+    scenarioId: text(server.scenarioId),
+    scenarioName: text(server.scenarioName),
+    gameVersion: text(server.gameVersion),
+    players: server.players,
+    maxPlayers: server.maxPlayers,
+    region: text(server.region),
+    platform: text(server.platform),
+    modCount: server.modCount,
+    official: server.official ?? false,
+    online: server.online ?? true,
+  };
+}
+
+export type WorkshopSearchParams = {
+  query?: string;
+  page?: number;
+  sort?: WorkshopSort;
+  /** Upstream accepts a single tag only; comma-separated values are rejected. */
+  tag?: string;
+  category?: string;
+};
 
 export class WorkshopClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
-  /** modId -> detail fields used to make browse cards useful. */
-  private previewCache = new Map<
-    string,
-    {
-      imageUrl: string | null;
-      version: string | null;
-      summary: string | null;
-      tags: string[];
-      expiresAt: number;
-    }
-  >();
+  private readonly apiKey: string;
 
-  constructor(options: { baseUrl: string; fetchImpl?: typeof fetch; timeoutMs?: number }) {
+  constructor(options: {
+    baseUrl: string;
+    fetchImpl?: typeof fetch;
+    timeoutMs?: number;
+    apiKey?: string;
+  }) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.timeoutMs = options.timeoutMs ?? 10_000;
+    this.timeoutMs = options.timeoutMs ?? 12_000;
+    this.apiKey = options.apiKey ?? '';
   }
 
   private async get(path: string): Promise<unknown> {
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        headers: { Accept: 'application/json' },
+        headers: {
+          Accept: 'application/json',
+          'X-API-Client': CLIENT_NAME,
+          'User-Agent': CLIENT_NAME,
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        },
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
@@ -175,113 +369,96 @@ export class WorkshopClient {
     return response.json();
   }
 
-  async health(): Promise<WorkshopHealth> {
-    const startedAt = Date.now();
-    try {
-      await this.get('/v1/health');
-      return {
-        ok: true,
-        latencyMs: Date.now() - startedAt,
-        checkedAt: new Date().toISOString(),
-        message: null,
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        latencyMs: null,
-        checkedAt: new Date().toISOString(),
-        message: sanitizeErrorMessage(error),
-      };
-    }
-  }
-
-  async search(query: string, page = 1, sort?: WorkshopSort): Promise<WorkshopSearchResponse> {
-    const params = new URLSearchParams();
-    if (query) params.set('search', query);
-    if (sort) params.set('sort', sort);
-    const qs = params.size > 0 ? `?${params.toString()}` : '';
-    const raw = await this.get(`/v1/mods/${Math.max(1, page)}${qs}`);
-    const parsed = searchResponseSchema.safeParse(raw);
+  private parse<T extends z.ZodTypeAny>(schema: T, raw: unknown): z.infer<T> {
+    const parsed = schema.safeParse(raw);
     if (!parsed.success) {
       throw ApiError.upstream('Workshop API returned an unexpected response shape.');
     }
-    const mods = parsed.data.data.map(toPreview);
-    this.applyCachedPreviews(mods);
-    return {
-      mods,
-      meta: parsed.data.meta,
-    };
+    return parsed.data;
   }
 
-  private applyCachedPreviews(mods: WorkshopModPreview[]): void {
-    const now = Date.now();
-    for (const mod of mods) {
-      const cached = this.previewCache.get(mod.id);
-      if (cached && cached.expiresAt > now) {
-        mod.imageUrl = mod.imageUrl ?? cached.imageUrl;
-        mod.version = mod.version ?? cached.version;
-        mod.summary = mod.summary ?? cached.summary;
-        mod.tags = mod.tags.length > 0 ? mod.tags : cached.tags;
-      }
-    }
+  async search(params: WorkshopSearchParams = {}): Promise<WorkshopSearchResponse> {
+    const search = new URLSearchParams();
+    search.set('page', String(Math.max(1, params.page ?? 1)));
+    if (params.query) search.set('search', params.query);
+    if (params.sort) search.set('sort', params.sort);
+    if (params.tag) search.set('tags', params.tag);
+    if (params.category) search.set('category', params.category);
+    const parsed = this.parse(searchResponseSchema, await this.get(`/v2/mods?${search}`));
+    return { mods: parsed.data.map(toPreview), meta: parsed.meta };
   }
 
   async getMod(modId: string): Promise<WorkshopModDetail> {
-    const raw = await this.get(`/v1/mod/${encodeURIComponent(modId)}`);
-    const parsed = modDetailEnvelopeSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw ApiError.upstream('Workshop API returned an unexpected response shape.');
-    }
-    const mod = parsed.data.mod;
-    const detail = {
-      id: mod.id,
-      name: mod.name,
-      author: mod.author,
-      imageUrl: normalizeImageUrl(mod.imageURL),
-      size: mod.size || null,
-      rating: mod.rating || null,
-      workshopUrl: mod.originalModURL || null,
-      version: mod.version ?? null,
-      gameVersion: mod.gameVersion ?? null,
-      subscribers: mod.subscribers ?? null,
-      downloads: mod.downloads ?? null,
-      createdAtText: mod.created ?? null,
-      lastModifiedText: mod.lastModified ?? null,
-      summary: mod.summary ?? null,
-      description: mod.description ?? null,
-      license: mod.license ?? null,
-      tags: mod.tags,
-      dependencies: mod.dependencies.map((dep) => ({
-        name: dep.name,
-        id: extractModId(dep.apiModURL),
-      })),
-      scenarios: mod.scenarios.map((scenario) => ({
-        name: scenario.name,
-        description: scenario.description || null,
-        scenarioId: extractScenarioId(
-          scenario.scenarioID,
-          scenario.gamemode,
-          scenario.description,
-          scenario.name,
-        ),
-        gamemode: cleanScenarioText(scenario.gamemode),
-        playerCount: scenario.playerCount || null,
-        imageUrl: normalizeImageUrl(scenario.imageURL),
-      })),
+    const raw = await this.get(`/v2/mods/${encodeURIComponent(modId)}`);
+    const { mod } = this.parse(modDetailEnvelopeSchema, raw);
+    return {
+      ...toPreview(mod),
+      description: text(mod.description),
+      license: text(mod.license),
+      downloadCount: mod.downloadCount ?? null,
+      previewImages: mod.previewImages
+        .map(normalizeImageUrl)
+        .filter((url): url is string => url !== null),
+      screenshots: mod.screenshots
+        .map(normalizeImageUrl)
+        .filter((url): url is string => url !== null),
+      versionCount: mod.versionCount ?? null,
+      dependencyCount: mod.dependencyCount ?? mod.dependencies.length,
+      scenarioCount: mod.scenarioCount ?? mod.scenarios.length,
+      dependencySizeBytes: sizeOrNull(mod.dependencySize),
+      totalSizeBytes: sizeOrNull(mod.totalSize),
+      dependencies: mod.dependencies.map(toDependency),
+      scenarios: mod.scenarios
+        .map(toScenario)
+        .filter((scenario): scenario is WorkshopScenario => scenario !== null),
     };
-    this.previewCache.set(detail.id, {
-      imageUrl: detail.imageUrl,
-      version: detail.version,
-      summary: detail.summary ?? detail.description,
-      tags: detail.tags,
-      expiresAt: Date.now() + PREVIEW_CACHE_TTL_MS,
+  }
+
+  async getVersions(modId: string): Promise<WorkshopModVersionsResponse> {
+    const raw = await this.get(`/v2/mods/${encodeURIComponent(modId)}/versions`);
+    const { data } = this.parse(versionsEnvelopeSchema, raw);
+    return { modId: data.modId || modId, versions: data.versions.map(toVersion) };
+  }
+
+  async getDependencies(modId: string): Promise<WorkshopDependency[]> {
+    const raw = await this.get(`/v2/mods/${encodeURIComponent(modId)}/dependencies`);
+    const { data } = this.parse(dependenciesEnvelopeSchema, raw);
+    return data.dependencies.map(toDependency);
+  }
+
+  async getScenarios(modId: string): Promise<WorkshopScenario[]> {
+    const raw = await this.get(`/v2/mods/${encodeURIComponent(modId)}/scenarios`);
+    const { data } = this.parse(scenariosEnvelopeSchema, raw);
+    return data.scenarios
+      .map(toScenario)
+      .filter((scenario): scenario is WorkshopScenario => scenario !== null);
+  }
+
+  async searchServers(query: string, page = 1): Promise<WorkshopServerSearchResponse> {
+    const search = new URLSearchParams({
+      page: String(Math.max(1, page)),
+      perPage: '25',
+      hasMods: 'true',
+      sort: 'players',
     });
-    if (this.previewCache.size > 5_000) {
-      const now = Date.now();
-      for (const [key, value] of this.previewCache) {
-        if (value.expiresAt <= now) this.previewCache.delete(key);
-      }
-    }
-    return detail;
+    if (query) search.set('search', query);
+    const parsed = this.parse(serverSearchEnvelopeSchema, await this.get(`/v2/servers?${search}`));
+    return { servers: parsed.data.map(toServerSummary), meta: parsed.meta };
+  }
+
+  async getServerMods(serverId: string): Promise<WorkshopServerModsResponse> {
+    const raw = await this.get(`/v2/servers/${encodeURIComponent(serverId)}/mods?sizes=true`);
+    const parsed = this.parse(serverModsEnvelopeSchema, raw);
+    return {
+      serverId: parsed.serverId || serverId,
+      mods: parsed.data.map((mod) => ({
+        id: mod.id.toUpperCase(),
+        name: mod.name,
+        version: text(mod.version),
+        sizeBytes: sizeOrNull(mod.size),
+      })),
+      knownSizeBytes: sizeOrNull(parsed.summary?.knownSize),
+      unresolvedCount: parsed.summary?.unresolvedCount ?? 0,
+    };
   }
 }

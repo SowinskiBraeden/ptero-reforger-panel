@@ -16,7 +16,9 @@ import type { ResourceHistoryService } from '../src/modules/servers/resource-his
 import { MockGameServerProvider } from '../src/modules/pterodactyl/mock-provider.js';
 import type { IngestionScheduler } from '../src/modules/reforger-logs/ingestion/scheduler.js';
 import type { ServerRecord, ServerService } from '../src/modules/servers/server-service.js';
-import { WorkshopClient } from '../src/modules/workshop/workshop-client.js';
+import type { WorkshopCache } from '../src/modules/workshop/workshop-cache.js';
+import type { MissionsService } from '../src/modules/reforger-logs/missions-catalog.js';
+import { ServerMetricsService } from '../src/modules/servers/metrics-service.js';
 
 const OWNER_ID = '111111111111111111';
 
@@ -115,24 +117,42 @@ function buildApp() {
     sessions,
     servers,
     provider,
-    workshop: new WorkshopClient({ baseUrl: 'https://workshop.invalid' }),
+    workshop: {
+      warm: () => undefined,
+      peekMod: () => undefined,
+      tryGetMod: async () => null,
+    } as unknown as WorkshopCache,
+    metrics: new ServerMetricsService(provider, null),
+    consoleHub: null,
     scheduler,
     resolveLogPath: async () => '/profile/logs/console.log',
     configSync: null,
+    configEditor: null,
     mods: {
-      getMods: async () => ({ mods: [], fetchedAt: new Date().toISOString() }),
+      getMods: async () => ({
+        mods: [],
+        revision: 'a1b2c3d4',
+        fetchedAt: new Date().toISOString(),
+      }),
       setMods: async () => ({
         mods: [],
+        revision: 'a1b2c3d4',
         fetchedAt: new Date().toISOString(),
         added: 0,
         removed: 0,
+        changed: 0,
         requiresRestart: true as const,
       }),
     } as unknown as ServerModsService,
     performance: {
-      get: async () => ({ settings: {}, fetchedAt: new Date().toISOString() }),
+      get: async () => ({
+        settings: {},
+        revision: 'a1b2c3d4',
+        fetchedAt: new Date().toISOString(),
+      }),
       update: async (_server: unknown, settings: unknown) => ({
         settings,
+        revision: 'a1b2c3d4',
         fetchedAt: new Date().toISOString(),
         changedFields: [],
         requiresRestart: true as const,
@@ -141,7 +161,9 @@ function buildApp() {
     resourceHistory: {
       history: () => ({ samples: [], intervalSeconds: 15 }),
     } as unknown as ResourceHistoryService,
-    missions: null,
+    missions: {
+      list: async () => ({ groups: [], incompleteModIds: [], fetchedAt: null }),
+    } as unknown as MissionsService,
   });
   return { app, provider, activity };
 }
@@ -335,7 +357,7 @@ describe('schedule management by role', () => {
 });
 
 describe('performance config by role', () => {
-  const validBody = {
+  const validSettings = {
     maxPlayers: 32,
     serverMaxViewDistance: null,
     networkViewDistance: null,
@@ -349,6 +371,9 @@ describe('performance config by role', () => {
     slotReservationTimeout: null,
     lobbyPlayerSynchronise: null,
   };
+  // The endpoint takes a settings envelope so callers can also pass the
+  // revision their edits were based on.
+  const validBody = { settings: validSettings };
 
   it('allows owner and server_admin, forbids mission_lead and viewer', async () => {
     const { app } = buildApp();
@@ -373,7 +398,7 @@ describe('performance config by role', () => {
     const response = await request(app)
       .put('/api/servers/training-server/config/performance')
       .set(asUser('owner-token'))
-      .send({ ...validBody, serverMaxViewDistance: 99999 });
+      .send({ settings: { ...validSettings, serverMaxViewDistance: 99999 } });
     expect(response.status).toBe(400);
     expect(response.body.error.message).toContain('serverMaxViewDistance');
   });

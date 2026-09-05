@@ -3,69 +3,48 @@ import type { CurrentUser, Role } from '@reforger-panel/shared';
 import { ROLES, ROLE_LABELS } from '@reforger-panel/shared';
 import {
   useActivity,
-  useConfiguration,
-  useKnownPlayers,
   useKillfeed,
+  useKnownPlayers,
   useLogHealth,
   usePlayers,
-  useServers,
+  usePrimaryServer,
   useSetUserRole,
   useUsers,
-  useWorkshopHealth,
 } from '../api/hooks.js';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../lib/format.js';
-import { Card, EmptyState, RoleBadge, Spinner } from '../components/ui.js';
-import { ActivityList, ConfigSummaryRows, CurrentPlayersCard } from '../components/widgets.js';
+import {
+  Badge,
+  Card,
+  EmptyState,
+  PageHeader,
+  RoleBadge,
+  SearchInput,
+  Spinner,
+} from '../components/ui.js';
+import { ActivityList, CurrentPlayersCard } from '../components/widgets.js';
 import { InvitesCard } from '../components/invites-card.js';
-import { MissionCard } from '../components/mission-card.js';
-import { PerformanceForm } from '../components/performance-form.js';
-import { SchedulesCard } from '../components/schedules-card.js';
-import { StartupVarsCard } from '../components/startup-vars-card.js';
 
-function usePrimarySlug(): string | null {
-  const { data } = useServers();
-  return data?.servers[0]?.slug ?? null;
-}
-
-export function ConfigurationsPage({ user }: { user: CurrentUser }) {
-  const slug = usePrimarySlug();
-  if (!slug) return <Spinner />;
-  return <ConfigurationsBody slug={slug} user={user} />;
-}
-
-function ConfigurationsBody({ slug, user }: { slug: string; user: CurrentUser }) {
-  const { data: config } = useConfiguration(slug);
-  const canEdit = user.capabilities.includes('config.edit');
-
-  return (
-    <div className="w-full space-y-5">
-      <h1 className="page-title">Configuration</h1>
-      <MissionCard slug={slug} canEdit={canEdit} />
-      <PerformanceForm slug={slug} canEdit={canEdit} />
-      {/*<SchedulesCard slug={slug} canEdit={canEdit} />*/}
-      {canEdit && <StartupVarsCard slug={slug} />}
-      <Card title="Full config summary (live from the server)">
-        {config ? <ConfigSummaryRows config={config} /> : <Spinner />}
-      </Card>
-    </div>
-  );
-}
+/* ---------------------------------------------------------------- players */
 
 export function PlayersPage() {
-  const slug = usePrimarySlug();
-  if (!slug) return <Spinner />;
-  return <PlayersBody slug={slug} />;
+  const server = usePrimaryServer();
+  if (!server) return <Spinner />;
+  return <PlayersBody slug={server.slug} />;
 }
+
+type PlayerSort = 'online' | 'last_seen' | 'playtime' | 'sessions' | 'name';
 
 function PlayersBody({ slug }: { slug: string }) {
   const { data: online } = usePlayers(slug);
   const { data: known } = useKnownPlayers(slug);
-  const [sort, setSort] = useState<'online' | 'last_seen' | 'playtime' | 'sessions' | 'name'>(
-    'online',
-  );
+  const [sort, setSort] = useState<PlayerSort>('online');
+  const [query, setQuery] = useState('');
+
   const sortedPlayers = useMemo(() => {
-    const players = [...(known?.players ?? [])];
-    players.sort((a, b) => {
+    const players = (known?.players ?? []).filter((player) =>
+      query ? player.displayName.toLowerCase().includes(query.toLowerCase()) : true,
+    );
+    return [...players].sort((a, b) => {
       if (sort === 'online') {
         if (a.online !== b.online) return a.online ? -1 : 1;
         return b.lastSeenAt.localeCompare(a.lastSeenAt);
@@ -75,35 +54,43 @@ function PlayersBody({ slug }: { slug: string }) {
       if (sort === 'sessions') return b.totalSessions - a.totalSessions;
       return a.displayName.localeCompare(b.displayName);
     });
-    return players;
-  }, [known?.players, sort]);
+  }, [known?.players, sort, query]);
 
   return (
-    <div className="w-full space-y-5">
-      <h1 className="page-title">Players</h1>
+    <div className="w-full space-y-4">
+      <PageHeader title="Players" />
       <CurrentPlayersCard slug={slug} maxPlayers={online?.maxPlayers ?? null} />
       <Card
         title="All known players"
         action={
-          <select
-            value={sort}
-            onChange={(event) => setSort(event.target.value as typeof sort)}
-            className="input py-1.5 text-xs"
-          >
-            <option value="online">Online first</option>
-            <option value="last_seen">Last seen</option>
-            <option value="playtime">Playtime</option>
-            <option value="sessions">Sessions</option>
-            <option value="name">Name</option>
-          </select>
+          <div className="flex items-center gap-2">
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder="Find a player…"
+              className="w-44"
+            />
+            <select
+              value={sort}
+              onChange={(event) => setSort(event.target.value as PlayerSort)}
+              className="input w-auto py-1 text-xs"
+            >
+              <option value="online">Online first</option>
+              <option value="last_seen">Last seen</option>
+              <option value="playtime">Playtime</option>
+              <option value="sessions">Sessions</option>
+              <option value="name">Name</option>
+            </select>
+          </div>
         }
       >
         {!known ? (
           <Spinner />
-        ) : known.players.length === 0 ? (
+        ) : sortedPlayers.length === 0 ? (
           <EmptyState
-            title="No players recorded yet"
-            hint="Players are discovered from server log connect events."
+            icon="users"
+            title={query ? 'No players match that name' : 'No players recorded yet'}
+            hint={query ? undefined : 'Players are discovered from server log connect events.'}
           />
         ) : (
           <div className="data-table-scroll">
@@ -120,24 +107,24 @@ function PlayersBody({ slug }: { slug: string }) {
               <tbody>
                 {sortedPlayers.map((player) => (
                   <tr key={player.id}>
-                    <td className="py-2 font-medium text-zinc-200">
-                      {player.displayName}
-                      {player.online && (
-                        <span className="ml-2 rounded bg-accent-600/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent-400">
-                          online
-                        </span>
-                      )}
+                    <td className="font-medium text-zinc-100">
+                      <span className="flex items-center gap-2">
+                        {player.displayName}
+                        {player.online && <Badge tone="ok">online</Badge>}
+                      </span>
                     </td>
-                    <td className="py-2 font-mono text-xs text-slate-dim">
+                    <td className="font-mono text-2xs text-slate-faint">
                       {player.externalPlayerId ? (
-                        player.externalPlayerId.slice(0, 12) + '…'
+                        `${player.externalPlayerId.slice(0, 12)}…`
                       ) : (
                         <span title="No stable ID in logs; matched by display name">name only</span>
                       )}
                     </td>
-                    <td className="py-2 text-slate-ink">{formatRelativeTime(player.lastSeenAt)}</td>
-                    <td className="py-2 text-right font-mono text-xs">{player.totalSessions}</td>
-                    <td className="py-2 text-right font-mono text-xs">
+                    <td className="numeric text-slate-ink">
+                      {formatRelativeTime(player.lastSeenAt)}
+                    </td>
+                    <td className="numeric text-right text-xs">{player.totalSessions}</td>
+                    <td className="numeric text-right text-xs">
                       {formatDuration(player.totalPlaytimeSeconds)}
                     </td>
                   </tr>
@@ -151,24 +138,20 @@ function PlayersBody({ slug }: { slug: string }) {
   );
 }
 
-export function ActivityPage() {
-  const slug = usePrimarySlug();
-  if (!slug) return <Spinner />;
-  return <ActivityBody slug={slug} />;
-}
+/* --------------------------------------------------------------- killfeed */
 
 export function KillfeedPage() {
-  const slug = usePrimarySlug();
-  if (!slug) return <Spinner />;
-  return <KillfeedBody slug={slug} />;
+  const server = usePrimaryServer();
+  if (!server) return <Spinner />;
+  return <KillfeedBody slug={server.slug} />;
 }
 
 function teamClass(team: string | null): string {
   const normalized = team?.toLowerCase() ?? '';
-  if (normalized.includes('blue') || normalized.includes('blufor')) return 'bg-sky-500';
-  if (normalized.includes('opfor') || normalized.includes('red')) return 'bg-red-500';
-  if (normalized.includes('independent') || normalized.includes('green')) return 'bg-emerald-500';
-  return 'bg-slate-dim';
+  if (normalized.includes('blue') || normalized.includes('blufor')) return 'bg-info-400';
+  if (normalized.includes('opfor') || normalized.includes('red')) return 'bg-danger-400';
+  if (normalized.includes('independent') || normalized.includes('green')) return 'bg-ok-400';
+  return 'bg-slate-faint';
 }
 
 function positionLabel(position: { x: number; y: number; z?: number | null } | null): string {
@@ -180,42 +163,36 @@ function positionLabel(position: { x: number; y: number; z?: number | null } | n
 function KillfeedBody({ slug }: { slug: string }) {
   const { data, isLoading } = useKillfeed(slug, 150);
   return (
-    <div className="w-full space-y-5">
-      <div>
-        <h1 className="page-title">Killfeed</h1>
-        <p className="page-kicker">
-          Parsed from ServerAdminTools kill events. Team, position, distance, and weapon show when
-          the log line provides them.
-        </p>
-      </div>
+    <div className="w-full space-y-4">
+      <PageHeader
+        title="Killfeed"
+        kicker="Parsed from ServerAdminTools kill events. Team, position, distance, and weapon show when the log line provides them."
+      />
       <Card title="Recent kills">
         {isLoading || !data ? (
           <Spinner />
         ) : data.events.length === 0 ? (
           <EmptyState
+            icon="crosshair"
             title="No kills recorded yet"
             hint="Killfeed requires ServerAdminTools kill event lines in the server log."
           />
         ) : (
-          <ul className="space-y-2">
+          <ul className="space-y-1.5">
             {data.events.map((event) => (
               <li
                 key={event.id}
-                className="rounded-md border border-graphite-800 bg-graphite-950/20 px-3.5 py-3"
+                className="rounded-sm border border-graphite-800 bg-graphite-950/40 px-3 py-2"
               >
                 <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className={`h-2.5 w-2.5 rounded-full ${teamClass(event.killerTeam)}`} />
+                  <span className={`h-2 w-2 rounded-full ${teamClass(event.killerTeam)}`} />
                   <span className="font-medium text-zinc-100">{event.killerName}</span>
                   <span className="text-slate-dim">killed</span>
-                  <span className={`h-2.5 w-2.5 rounded-full ${teamClass(event.victimTeam)}`} />
+                  <span className={`h-2 w-2 rounded-full ${teamClass(event.victimTeam)}`} />
                   <span className="font-medium text-zinc-100">{event.victimName}</span>
-                  {event.friendly && (
-                    <span className="rounded border border-warn-400/30 bg-warn-400/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-warn-400">
-                      friendly
-                    </span>
-                  )}
+                  {event.friendly && <Badge tone="warn">friendly</Badge>}
                 </div>
-                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-dim">
+                <div className="numeric mt-1 flex flex-wrap gap-x-4 gap-y-1 text-2xs text-slate-dim">
                   <span>{formatDateTime(event.occurredAt)}</span>
                   <span>attacker {positionLabel(event.killerPosition)}</span>
                   <span>victim {positionLabel(event.victimPosition)}</span>
@@ -234,33 +211,41 @@ function KillfeedBody({ slug }: { slug: string }) {
   );
 }
 
+/* --------------------------------------------------------------- activity */
+
+export function ActivityPage() {
+  const server = usePrimaryServer();
+  if (!server) return <Spinner />;
+  return <ActivityBody slug={server.slug} />;
+}
+
 function ActivityBody({ slug }: { slug: string }) {
   const { data } = useActivity(slug, 100);
   return (
-    <div className="w-full space-y-5">
-      <h1 className="page-title">Activity</h1>
-      <Card>{data ? <ActivityList items={data.activity} maxHeight={560} /> : <Spinner />}</Card>
+    <div className="w-full space-y-4">
+      <PageHeader title="Activity" kicker="Panel actions and parsed server events, newest last." />
+      <Card padded={false} className="p-4">
+        {data ? <ActivityList items={data.activity} maxHeight={640} /> : <Spinner />}
+      </Card>
     </div>
   );
 }
 
+/* --------------------------------------------------------------- settings */
+
 export function SettingsPage({ user }: { user: CurrentUser }) {
   const isOwner = user.role === 'owner';
-  const slug = usePrimarySlug();
+  const server = usePrimaryServer();
   const { data: users } = useUsers(isOwner);
-  const { data: workshop } = useWorkshopHealth();
-  const { data: logs } = useLogHealth(slug ?? '', isOwner && slug !== null);
+  const { data: logs } = useLogHealth(server?.slug ?? '', isOwner && server !== undefined);
   const setRole = useSetUserRole();
 
   return (
-    <div className="w-full space-y-5">
-      <div>
-        <h1 className="page-title">Settings</h1>
-        <p className="page-kicker">
-          Manage private Discord access, server integrations, and the checks that matter before
-          exposing the panel to friends.
-        </p>
-      </div>
+    <div className="w-full space-y-4">
+      <PageHeader
+        title="Settings"
+        kicker="Manage private Discord access and review the panel's integrations."
+      />
 
       <Card title="Your account">
         <div className="flex items-center gap-3">
@@ -276,7 +261,7 @@ export function SettingsPage({ user }: { user: CurrentUser }) {
             </span>
           )}
           <div>
-            <p className="text-sm font-medium text-zinc-200">
+            <p className="text-sm font-medium text-zinc-100">
               {user.displayName ?? user.username}{' '}
               <span className="text-slate-dim">({user.username})</span>
             </p>
@@ -290,23 +275,23 @@ export function SettingsPage({ user }: { user: CurrentUser }) {
           {!users ? (
             <Spinner />
           ) : (
-            <ul className="space-y-2">
+            <ul className="space-y-1.5">
               {users.users.map((panelUser) => (
                 <li
                   key={panelUser.id}
-                  className="flex items-center justify-between rounded-md border border-graphite-800 bg-graphite-950/20 px-3 py-2.5"
+                  className="flex items-center justify-between gap-3 rounded-sm border border-graphite-800 bg-graphite-950/40 px-3 py-2"
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2.5">
                     {panelUser.avatarUrl ? (
                       <img src={panelUser.avatarUrl} alt="" className="h-7 w-7 rounded-full" />
                     ) : (
                       <span className="h-7 w-7 rounded-full bg-graphite-700" />
                     )}
-                    <div>
-                      <p className="text-sm text-zinc-200">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm text-zinc-100">
                         {panelUser.displayName ?? panelUser.username}
                       </p>
-                      <p className="text-xs text-slate-dim">
+                      <p className="text-2xs text-slate-dim">
                         joined {formatDateTime(panelUser.createdAt)}
                       </p>
                     </div>
@@ -319,7 +304,7 @@ export function SettingsPage({ user }: { user: CurrentUser }) {
                       onChange={(event) =>
                         setRole.mutate({ userId: panelUser.id, role: event.target.value as Role })
                       }
-                      className="input px-2 py-1 text-xs"
+                      className="input w-auto py-1 text-xs"
                     >
                       {ROLES.map((role) => (
                         <option key={role} value={role}>
@@ -340,30 +325,24 @@ export function SettingsPage({ user }: { user: CurrentUser }) {
       {isOwner && (
         <Card title="Integrations">
           <dl className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <dt className="text-slate-ink">Workshop API</dt>
-              <dd className={workshop?.ok ? 'text-accent-400' : 'text-danger-400'}>
-                {workshop
-                  ? workshop.ok
-                    ? `healthy (${workshop.latencyMs} ms)`
-                    : 'unreachable'
-                  : '—'}
-              </dd>
-            </div>
-            <div className="flex justify-between">
+            <div className="flex items-center justify-between gap-4">
               <dt className="text-slate-ink">Pterodactyl</dt>
-              <dd className="text-zinc-300">
-                {logs?.configured ? 'configured' : 'mock / not configured'}
+              <dd>
+                {logs?.configured ? (
+                  <Badge tone="ok">configured</Badge>
+                ) : (
+                  <Badge>mock / not configured</Badge>
+                )}
               </dd>
             </div>
-            <div className="flex justify-between">
-              <dt className="text-slate-ink">Log path</dt>
-              <dd className="font-mono text-xs text-zinc-300">{logs?.logPath ?? '—'}</dd>
+            <div className="flex items-center justify-between gap-4">
+              <dt className="shrink-0 text-slate-ink">Game log path</dt>
+              <dd className="truncate font-mono text-2xs text-slate-dim">{logs?.logPath ?? '—'}</dd>
             </div>
           </dl>
-          <p className="mt-3 text-xs text-slate-dim">
-            Connection settings are managed through environment variables. Use real Pterodactyl
-            client API credentials for production and keep mock mode off.
+          <p className="mt-3 text-2xs leading-5 text-slate-dim">
+            Connection settings are managed through environment variables. Workshop metadata is
+            fetched on demand and cached in the API process — there is no background polling.
           </p>
         </Card>
       )}

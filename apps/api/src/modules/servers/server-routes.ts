@@ -1,54 +1,54 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type {
+  ConfigPatchOp,
   LogIngestionHealth,
-  MissionInfo,
-  ModDependencyIssue,
-  ServerResources,
+  ReforgerConfigMod,
   ServerStatus,
   ServerSummary,
 } from '@reforger-panel/shared';
 import { ApiError } from '../../lib/errors.js';
 import { rateLimit } from '../../lib/rate-limit.js';
 import { requireAuth, requireCapability } from '../auth/auth-middleware.js';
+import type { ConfigEditorService } from '../config/config-editor-service.js';
 import type { ConfigSyncService } from '../config/config-sync.js';
 import type { ServerModsService } from '../config/mods-service.js';
 import type { PerformanceSettingsService } from '../config/performance-service.js';
-import type { ResourceHistoryService } from './resource-history.js';
+import type { ConsoleHub } from '../pterodactyl/console-hub.js';
 import type { GameServerProvider } from '../pterodactyl/types.js';
 import type { LogPathResolver } from '../reforger-logs/ingestion/log-path-resolver.js';
 import type { IngestionScheduler, ScheduledServer } from '../reforger-logs/ingestion/scheduler.js';
-import type { MissionCatalog } from '../reforger-logs/missions-catalog.js';
-import {
-  DEFAULT_MISSION,
-  DEFAULT_SCENARIO_ID,
-  hasScenarioTag,
-  mergeMissions,
-  scenariosFromWorkshopMod,
-} from '../reforger-logs/missions-catalog.js';
+import type { MissionsService } from '../reforger-logs/missions-catalog.js';
+import type { WorkshopCache } from '../workshop/workshop-cache.js';
+import type { ServerMetricsService } from './metrics-service.js';
+import type { ResourceHistoryService } from './resource-history.js';
 import type { ServerRecord, ServerService } from './server-service.js';
-import type { WorkshopClient } from '../workshop/workshop-client.js';
 
 const slugSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/, 'Invalid server slug.');
 
 export type ServerRouterDeps = {
   service: ServerService;
   provider: GameServerProvider;
+  metrics: ServerMetricsService;
+  consoleHub: ConsoleHub | null;
   scheduler: IngestionScheduler | null;
   resolveLogPath: LogPathResolver | null;
   configSync: ConfigSyncService | null;
+  configEditor: ConfigEditorService | null;
   mods: ServerModsService | null;
   performance: PerformanceSettingsService | null;
   resourceHistory: ResourceHistoryService | null;
-  missions: MissionCatalog | null;
-  workshop: WorkshopClient;
+  missions: MissionsService;
+  workshop: WorkshopCache;
   staleAfterSeconds: number;
   mockMode: boolean;
 };
 
+const revisionSchema = z.string().regex(/^[a-f0-9]{8,64}$/, 'Invalid revision.');
+
 // Validation ranges follow the Bohemia server-config reference. Only provided
 // keys are touched; `null` removes the key (the game default applies).
-const performanceBodySchema = z
+const performanceSettingsSchema = z
   .object({
     scenarioId: z
       .string()
@@ -73,6 +73,48 @@ const performanceBodySchema = z
   .partial()
   .strict();
 
+const performanceBodySchema = z.object({
+  settings: performanceSettingsSchema,
+  expectedRevision: revisionSchema.optional(),
+  writeStartupVars: z.boolean().default(true),
+});
+
+/**
+ * Dotted config paths only — no array indices, no prototype-polluting
+ * segments. `game.mods` is owned by the mods endpoints, which understand
+ * versions and dependencies, so it is refused here.
+ */
+const configPathSchema = z
+  .string()
+  .max(200)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/, 'Invalid config path.')
+  .refine((path) => !path.split('.').some((segment) => segment === '__proto__'), 'Invalid path.')
+  .refine((path) => path !== 'game.mods' && !path.startsWith('game.mods.'), {
+    message: 'The mod list is managed on the Mods page.',
+  });
+
+const configPatchBodySchema = z.object({
+  ops: z
+    .array(
+      z.object({
+        path: configPathSchema,
+        value: z.union([z.string().max(4000), z.number(), z.boolean(), z.null()]),
+      }),
+    )
+    .min(1)
+    .max(200),
+  expectedRevision: revisionSchema.optional(),
+  writeStartupVars: z.boolean().default(false),
+});
+
+const configRawBodySchema = z.object({
+  content: z
+    .string()
+    .min(2)
+    .max(256 * 1024),
+  expectedRevision: revisionSchema.optional(),
+});
+
 const startupVariableBodySchema = z.object({
   key: z.string().regex(/^[A-Z0-9_]{1,64}$/, 'Invalid variable name.'),
   value: z.string().max(500),
@@ -91,31 +133,43 @@ const scheduleIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'Invalid sche
 
 // Reforger Workshop mod IDs are 16 hex characters (see the Bohemia server
 // config reference); name/version are free-ish text with sane caps.
+const modEntrySchema = z.object({
+  modId: z.string().regex(/^[A-Fa-f0-9]{16}$/, 'Invalid mod id.'),
+  name: z.string().trim().max(200).optional(),
+  version: z
+    .string()
+    .trim()
+    .max(32)
+    .regex(/^[\w.+-]*$/, 'Invalid version.')
+    .optional(),
+});
+
 const modsBodySchema = z.object({
-  mods: z
-    .array(
-      z.object({
-        modId: z.string().regex(/^[A-Fa-f0-9]{16}$/, 'Invalid mod id.'),
-        name: z.string().trim().max(200).optional(),
-        version: z
-          .string()
-          .trim()
-          .max(32)
-          .regex(/^[\w.+-]*$/, 'Invalid version.')
-          .optional(),
-      }),
-    )
-    .max(200),
+  mods: z.array(modEntrySchema).max(300),
+  expectedRevision: revisionSchema.optional(),
+});
+
+const modsResolveBodySchema = z.object({
+  mods: z.array(modEntrySchema).max(300),
 });
 
 function providerId(server: ServerRecord): string {
   return server.pterodactylServerId ?? server.slug;
 }
 
+/** Rejects duplicate mod ids up front instead of silently collapsing them. */
+function assertNoDuplicates(mods: readonly ReforgerConfigMod[]): void {
+  const ids = mods.map((mod) => mod.modId.toUpperCase());
+  if (new Set(ids).size !== ids.length) {
+    throw ApiError.validation('Duplicate mod ids in the list.');
+  }
+}
+
 export function createServerRouter(deps: ServerRouterDeps): Router {
   const router = Router();
-  const { service, provider } = deps;
+  const { service, provider, metrics } = deps;
   const powerRateLimit = rateLimit({ windowMs: 60_000, max: 10, keyPrefix: 'power' });
+  const writeRateLimit = rateLimit({ windowMs: 60_000, max: 20, keyPrefix: 'configwrite' });
   const syncRateLimit = rateLimit({ windowMs: 60_000, max: 6, keyPrefix: 'logsync' });
 
   router.use(requireAuth);
@@ -128,10 +182,24 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
     return server;
   }
 
+  function requireMods(): ServerModsService {
+    if (!deps.mods) {
+      throw ApiError.notConfigured('Mod management requires a configured game server backend.');
+    }
+    return deps.mods;
+  }
+
+  function requireConfigEditor(): ConfigEditorService {
+    if (!deps.configEditor) {
+      throw ApiError.notConfigured('Config editing requires a configured game server backend.');
+    }
+    return deps.configEditor;
+  }
+
   async function toSummary(server: ServerRecord): Promise<ServerSummary> {
     let status = server.status as ServerStatus;
     try {
-      status = await provider.getServerStatus(providerId(server));
+      status = await metrics.getStatus(providerId(server));
       if (status !== server.status) {
         await service.updateStatus(server.id, status);
       }
@@ -151,6 +219,8 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
     };
   }
 
+  // ---------- server identity & telemetry ----------
+
   router.get('/', async (_req, res, next) => {
     try {
       const servers = await service.listServers();
@@ -162,8 +232,7 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
 
   router.get('/:slug', async (req, res, next) => {
     try {
-      const server = await loadServer(req.params.slug);
-      res.json(await toSummary(server));
+      res.json(await toSummary(await loadServer(req.params.slug)));
     } catch (error) {
       next(error);
     }
@@ -172,9 +241,7 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
   router.get('/:slug/resources', async (req, res, next) => {
     try {
       const server = await loadServer(req.params.slug);
-      const resources = await provider.getServerResources(providerId(server));
-      const body: ServerResources = { ...resources, fetchedAt: new Date().toISOString() };
-      res.json(body);
+      res.json(await metrics.getResources(providerId(server)));
     } catch (error) {
       next(error);
     }
@@ -187,6 +254,21 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
         throw ApiError.notConfigured('Resource history requires a configured game server backend.');
       }
       res.json(deps.resourceHistory.history(server.id));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ---------- configuration ----------
+
+  router.get('/:slug/configuration', async (req, res, next) => {
+    try {
+      const server = await loadServer(req.params.slug);
+      if (!deps.configSync) {
+        throw ApiError.notConfigured('Configuration requires a configured game server backend.');
+      }
+      const { config, revision } = await deps.configSync.getLiveConfig(server);
+      res.json({ config, revision, fetchedAt: new Date().toISOString() });
     } catch (error) {
       next(error);
     }
@@ -206,7 +288,7 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
 
   router.put(
     '/:slug/config/performance',
-    syncRateLimit,
+    writeRateLimit,
     requireCapability('config.edit', 'You do not have permission to edit the configuration.'),
     async (req, res, next) => {
       try {
@@ -221,14 +303,10 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
             issue ? `${issue.path.join('.')}: ${issue.message}` : 'Invalid settings.',
           );
         }
-        const result = await deps.performance.update(server, body.data);
-        // Many Reforger eggs template config.json from startup variables at
-        // boot; mirror the mission there too so switching sticks either way.
-        if (result.changedFields.includes('scenarioId') && body.data.scenarioId) {
-          await provider
-            .updateStartupVariable(providerId(server), 'SCENARIO_ID', body.data.scenarioId)
-            .catch(() => undefined); // variable may not exist on this egg
-        }
+        const result = await deps.performance.update(server, body.data.settings, {
+          expectedRevision: body.data.expectedRevision,
+          writeStartupVars: body.data.writeStartupVars,
+        });
         if (result.changedFields.length > 0) {
           const user = req.user!;
           await service.recordActivity({
@@ -245,6 +323,117 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
       }
     },
   );
+
+  /** Every key config.json actually contains, for the searchable editor. */
+  router.get(
+    '/:slug/config/tree',
+    requireCapability('config.edit', 'Configuration editing is restricted.'),
+    async (req, res, next) => {
+      try {
+        const server = await loadServer(req.params.slug);
+        res.json(await requireConfigEditor().getTree(server));
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.patch(
+    '/:slug/config',
+    writeRateLimit,
+    requireCapability('config.edit', 'You do not have permission to edit the configuration.'),
+    async (req, res, next) => {
+      try {
+        const server = await loadServer(req.params.slug);
+        const body = configPatchBodySchema.safeParse(req.body);
+        if (!body.success) {
+          const issue = body.error.issues[0];
+          throw ApiError.validation(issue?.message ?? 'Invalid configuration patch.');
+        }
+        const ops: ConfigPatchOp[] = body.data.ops;
+        const result = await requireConfigEditor().patch(server, ops, {
+          expectedRevision: body.data.expectedRevision,
+          writeStartupVars: body.data.writeStartupVars,
+        });
+        if (result.changedPaths.length > 0) {
+          const user = req.user!;
+          await service.recordActivity({
+            serverId: server.id,
+            actorUserId: user.id,
+            action: 'config.updated',
+            // Paths only — values can be passwords.
+            summary: `config.json updated by ${user.displayName ?? user.username}: ${result.changedPaths.join(', ')} (applies on restart)`,
+            metadata: { changedPaths: result.changedPaths },
+          });
+        }
+        res.json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/:slug/config/raw',
+    requireCapability('config.edit', 'Configuration editing is restricted.'),
+    async (req, res, next) => {
+      try {
+        const server = await loadServer(req.params.slug);
+        res.json(await requireConfigEditor().getRaw(server));
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.put(
+    '/:slug/config/raw',
+    writeRateLimit,
+    requireCapability('config.edit', 'You do not have permission to edit the configuration.'),
+    async (req, res, next) => {
+      try {
+        const server = await loadServer(req.params.slug);
+        const body = configRawBodySchema.safeParse(req.body);
+        if (!body.success) throw ApiError.validation('Invalid config.json payload.');
+        const result = await requireConfigEditor().putRaw(
+          server,
+          body.data.content,
+          body.data.expectedRevision,
+        );
+        const user = req.user!;
+        await service.recordActivity({
+          serverId: server.id,
+          actorUserId: user.id,
+          action: 'config.raw.updated',
+          summary: `config.json replaced by ${user.displayName ?? user.username} (applies on restart)`,
+          metadata: { revision: result.revision },
+        });
+        res.json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/:slug/config/sync',
+    syncRateLimit,
+    requireCapability('ops.health.view', 'Config sync is restricted to owner and server admins.'),
+    async (req, res, next) => {
+      try {
+        const server = await loadServer(req.params.slug);
+        if (!deps.configSync) {
+          throw ApiError.notConfigured('Config import requires a configured game server backend.');
+        }
+        const result = await deps.configSync.sync(server);
+        res.json({ ok: true, serverName: result.serverName, maxPlayers: result.maxPlayers });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // ---------- players, activity, killfeed ----------
 
   router.get('/:slug/players', async (req, res, next) => {
     try {
@@ -284,137 +473,108 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
     }
   });
 
-  router.get('/:slug/configuration', async (req, res, next) => {
-    try {
-      const server = await loadServer(req.params.slug);
-      if (!deps.configSync) {
-        throw ApiError.notConfigured('Configuration requires a configured game server backend.');
-      }
-      const config = await deps.configSync.getLiveConfig(server);
-      res.json({ config, fetchedAt: new Date().toISOString() });
-    } catch (error) {
-      next(error);
-    }
-  });
+  // ---------- missions ----------
 
   router.get('/:slug/missions', async (req, res, next) => {
     try {
       const server = await loadServer(req.params.slug);
-
-      // Resolve the installed mod list from config.json.
-      // Prefer the mods service (already owns that parse); fall back to configSync.
-      let installedModIds: string[] = [];
+      let installed: ReforgerConfigMod[] = [];
       if (deps.mods) {
-        const modsData = await deps.mods.getMods(server);
-        installedModIds = modsData.mods.map((m) => m.modId);
+        installed = (await deps.mods.getMods(server)).mods;
       } else if (deps.configSync) {
-        const config = await deps.configSync.getLiveConfig(server).catch(() => null);
-        installedModIds = (config?.mods ?? []).map((m) => m.modId);
+        const live = await deps.configSync.getLiveConfig(server).catch(() => null);
+        installed = live?.config.mods ?? [];
       }
-
-      // Workshop API -> scenarios from installed scenario-tagged mods.
-      const modMissions: MissionInfo[] = [];
-      let scenarioLookupComplete = true;
-      if (installedModIds.length > 0) {
-        const details = await Promise.allSettled(
-          installedModIds.map((modId) => deps.workshop.getMod(modId)),
-        );
-        scenarioLookupComplete = details.every((result) => result.status === 'fulfilled');
-        for (const result of details) {
-          if (result.status !== 'fulfilled') continue;
-          const mod = result.value;
-          if (hasScenarioTag(mod.tags)) {
-            modMissions.push(...scenariosFromWorkshopMod(mod));
-          }
-        }
-      }
-
-      res.json({
-        missions: mergeMissions([DEFAULT_MISSION], modMissions),
-        fetchedAt: scenarioLookupComplete ? new Date().toISOString() : null,
-      });
+      res.json(await deps.missions.list(installed));
     } catch (error) {
       next(error);
     }
   });
 
+  // ---------- live console ----------
+
+  /**
+   * Server-Sent Events relay of the Pterodactyl/Wings feed.
+   *
+   * This is what makes install, update and mod-download output visible: it
+   * carries whatever the hosting backend emits, rather than tailing the game's
+   * own log file, which does not exist until the game has already started.
+   */
   router.get(
-    '/:slug/logs/stream',
+    '/:slug/console/stream',
     requireCapability('ops.health.view', 'Live console stream is restricted.'),
     async (req, res, next) => {
       try {
-        const server = await loadServer(req.params.slug);
-        if (!deps.resolveLogPath) {
-          throw ApiError.notConfigured('Log streaming requires a configured game server backend.');
+        await loadServer(req.params.slug);
+        const hub = deps.consoleHub;
+        if (!hub) {
+          throw ApiError.notConfigured(
+            'Live console requires a configured game server backend with the websocket enabled.',
+          );
         }
 
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
+          'Cache-Control': 'no-cache, no-transform',
           Connection: 'keep-alive',
           'X-Accel-Buffering': 'no',
         });
         res.flushHeaders();
 
-        const controller = new AbortController();
-        req.on('close', () => controller.abort());
+        const send = (event: string, data: unknown) => {
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        };
 
-        // Poll the log file every 2 seconds and push only new lines via SSE.
-        // Tracks total file size to derive the new-content offset on each poll,
-        // so we never re-send lines and handle log rotation gracefully.
-        let lastTotalBytes = 0;
+        send('backlog', hub.backlog());
+        const stats = hub.latestStats();
+        if (stats) send('stats', stats);
 
-        const sleep = (ms: number) =>
-          new Promise<void>((resolve) => {
-            const t = setTimeout(resolve, ms);
-            controller.signal.addEventListener(
-              'abort',
-              () => {
-                clearTimeout(t);
-                resolve();
-              },
-              { once: true },
-            );
-          });
-
-        while (!controller.signal.aborted) {
-          try {
-            const logPath = await deps.resolveLogPath();
-            if (logPath) {
-              const file = await provider.downloadTextFile(providerId(server), logPath, 512 * 1024);
-              const totalBytes =
-                file.totalSizeBytes ?? file.contentStartOffset + file.content.length;
-
-              let newContent: string;
-              if (lastTotalBytes === 0 || totalBytes < lastTotalBytes) {
-                // First poll or log rotated — send all available content.
-                newContent = file.content;
-              } else {
-                const skip = Math.max(0, lastTotalBytes - file.contentStartOffset);
-                newContent = file.content.slice(skip);
-              }
-              lastTotalBytes = totalBytes;
-
-              if (newContent) {
-                for (const line of newContent.split('\n')) {
-                  if (controller.signal.aborted) break;
-                  if (line) res.write(`data: ${JSON.stringify(line)}\n\n`);
-                }
-              }
-            }
-          } catch {
-            // Provider unreachable or no log yet — keep the connection alive.
+        const unsubscribe = hub.subscribe((event) => {
+          switch (event.type) {
+            case 'line':
+              send('line', event.line);
+              break;
+            case 'status':
+              send('status', { status: event.status });
+              break;
+            case 'stats':
+              send('stats', event.stats);
+              break;
           }
-          await sleep(2000);
-        }
+        });
 
-        res.end();
+        // Proxies drop idle connections; a comment frame keeps them open.
+        const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
+        heartbeat.unref?.();
+
+        req.on('close', () => {
+          clearInterval(heartbeat);
+          unsubscribe();
+          res.end();
+        });
       } catch (error) {
         next(error);
       }
     },
   );
 
+  router.get(
+    '/:slug/console/backlog',
+    requireCapability('ops.health.view', 'Live console is restricted.'),
+    async (req, res, next) => {
+      try {
+        await loadServer(req.params.slug);
+        if (!deps.consoleHub) {
+          throw ApiError.notConfigured('Live console requires a configured game server backend.');
+        }
+        res.json(deps.consoleHub.backlog());
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  /** The game's own log file — kept as a diagnostic alongside the live feed. */
   router.get(
     '/:slug/logs/raw',
     requireCapability('ops.health.view', 'Raw logs are restricted.'),
@@ -447,6 +607,8 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
     },
   );
 
+  // ---------- startup variables ----------
+
   router.get(
     '/:slug/startup',
     requireCapability('config.edit', 'Startup variables are restricted.'),
@@ -473,7 +635,7 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
 
   router.put(
     '/:slug/startup/variable',
-    syncRateLimit,
+    writeRateLimit,
     requireCapability('config.edit', 'Startup variables are restricted.'),
     async (req, res, next) => {
       try {
@@ -497,6 +659,8 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
     },
   );
 
+  // ---------- schedules ----------
+
   router.get(
     '/:slug/schedules',
     requireCapability('config.edit', 'Schedule management is restricted.'),
@@ -515,7 +679,7 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
 
   router.post(
     '/:slug/schedules/restarts',
-    syncRateLimit,
+    writeRateLimit,
     requireCapability('config.edit', 'Schedule management is restricted.'),
     async (req, res, next) => {
       try {
@@ -540,7 +704,7 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
 
   router.put(
     '/:slug/schedules/:scheduleId/restart',
-    syncRateLimit,
+    writeRateLimit,
     requireCapability('config.edit', 'Schedule management is restricted.'),
     async (req, res, next) => {
       try {
@@ -571,7 +735,7 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
 
   router.delete(
     '/:slug/schedules/:scheduleId',
-    syncRateLimit,
+    writeRateLimit,
     requireCapability('config.edit', 'Schedule management is restricted.'),
     async (req, res, next) => {
       try {
@@ -594,84 +758,39 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
     },
   );
 
+  // ---------- mods ----------
+
   router.get('/:slug/mods', async (req, res, next) => {
     try {
-      const server = await loadServer(req.params.slug);
-      if (!deps.mods) {
-        throw ApiError.notConfigured('Mod management requires a configured game server backend.');
-      }
-      res.json(await deps.mods.getMods(server));
+      res.json(await requireMods().getMods(await loadServer(req.params.slug)));
     } catch (error) {
       next(error);
     }
   });
 
-  router.get('/:slug/mods/check', async (req, res, next) => {
+  /**
+   * Everything the Mods page renders, in one request: installed mods joined
+   * with cached Workshop metadata, latest versions, dependency gaps and
+   * removal blockers. Replaces the old fan-out of one browser request per mod.
+   */
+  router.get('/:slug/mods/overview', async (req, res, next) => {
     try {
-      const server = await loadServer(req.params.slug);
-      if (!deps.mods) {
-        throw ApiError.notConfigured('Mod management requires a configured game server backend.');
+      res.json(await requireMods().getOverview(await loadServer(req.params.slug)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** Expands a staged mod list into its full dependency closure, with sizes. */
+  router.post('/:slug/mods/resolve', async (req, res, next) => {
+    try {
+      await loadServer(req.params.slug);
+      const body = modsResolveBodySchema.safeParse(req.body);
+      if (!body.success) {
+        throw ApiError.validation(body.error.issues[0]?.message ?? 'Invalid mod list.');
       }
-      const { mods } = await deps.mods.getMods(server);
-      const installedIds = new Set(mods.map((m) => m.modId.toUpperCase()));
-
-      // Fetch workshop details for all installed mods in parallel.
-      const details = await Promise.allSettled(mods.map((mod) => deps.workshop.getMod(mod.modId)));
-
-      const modsWithMissingVersions: string[] = [];
-      const modsWithMissingDeps: ModDependencyIssue[] = [];
-
-      for (let i = 0; i < mods.length; i++) {
-        const mod = mods[i]!;
-        if (!mod.version) modsWithMissingVersions.push(mod.modId);
-        const result = details[i]!;
-        if (result.status === 'fulfilled') {
-          const missing = result.value.dependencies.filter(
-            (dep) => dep.id && !installedIds.has(dep.id.toUpperCase()),
-          );
-          if (missing.length > 0) {
-            modsWithMissingDeps.push({
-              modId: mod.modId,
-              modName: mod.name ?? result.value.name ?? null,
-              missing,
-            });
-          }
-        }
-      }
-
-      // Detect orphaned mission: configured scenarioId no longer available.
-      let orphanedMission: { scenarioId: string; name: string | null } | null = null;
-      const configData = deps.configSync
-        ? await deps.configSync.getLiveConfig(server).catch(() => null)
-        : null;
-      const scenarioId = configData?.scenarioId ?? null;
-
-      if (scenarioId) {
-        const knownScenarioIds = new Set([DEFAULT_SCENARIO_ID]);
-        const scenarioLookupComplete = details.every((result) => result.status === 'fulfilled');
-        for (const result of details) {
-          if (result.status === 'fulfilled') {
-            const mod = result.value;
-            if (!hasScenarioTag(mod.tags)) continue;
-            for (const s of mod.scenarios) {
-              knownScenarioIds.add(s.scenarioId);
-            }
-          }
-        }
-        if (scenarioLookupComplete && !knownScenarioIds.has(scenarioId)) {
-          orphanedMission = {
-            scenarioId,
-            name: null,
-          };
-        }
-      }
-
-      res.json({
-        modsWithMissingVersions,
-        modsWithMissingDeps,
-        orphanedMission,
-        checkedAt: new Date().toISOString(),
-      });
+      assertNoDuplicates(body.data.mods);
+      res.json(await requireMods().resolve(body.data.mods));
     } catch (error) {
       next(error);
     }
@@ -679,46 +798,41 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
 
   router.put(
     '/:slug/mods',
-    syncRateLimit,
+    writeRateLimit,
     requireCapability('mods.manage', 'You do not have permission to manage mods.'),
     async (req, res, next) => {
       try {
         const server = await loadServer(req.params.slug);
-        if (!deps.mods) {
-          throw ApiError.notConfigured('Mod management requires a configured game server backend.');
-        }
+        const mods = requireMods();
         const body = modsBodySchema.safeParse(req.body);
         if (!body.success) {
           throw ApiError.validation(body.error.issues[0]?.message ?? 'Invalid mod list.');
         }
-        // Reject duplicate mod ids up front instead of silently collapsing.
-        const ids = body.data.mods.map((mod) => mod.modId.toUpperCase());
-        if (new Set(ids).size !== ids.length) {
-          throw ApiError.validation('Duplicate mod ids in the list.');
-        }
+        assertNoDuplicates(body.data.mods);
 
-        // Reforger requires a version in config.json for each mod to load.
-        // Fetch it from the Workshop for any mod the caller didn't supply one for.
-        const enrichedMods = await Promise.all(
+        // Reforger needs a version in config.json for each mod to load. Fill in
+        // the latest known version for any entry the caller left unpinned.
+        const enriched = await Promise.all(
           body.data.mods.map(async (mod) => {
             if (mod.version) return mod;
-            try {
-              const detail = await deps.workshop.getMod(mod.modId);
-              return { ...mod, ...(detail.version ? { version: detail.version } : {}) };
-            } catch {
-              return mod;
-            }
+            const detail = await deps.workshop.tryGetMod(mod.modId);
+            return detail?.version ? { ...mod, version: detail.version } : mod;
           }),
         );
 
-        const result = await deps.mods.setMods(server, enrichedMods);
+        const result = await mods.setMods(server, enriched, body.data.expectedRevision);
         const user = req.user!;
         await service.recordActivity({
           serverId: server.id,
           actorUserId: user.id,
           action: 'mods.updated',
-          summary: `Mods updated by ${user.displayName ?? user.username}: ${result.added} added, ${result.removed} removed (${result.mods.length} total, applies on restart)`,
-          metadata: { added: result.added, removed: result.removed, total: result.mods.length },
+          summary: `Mods updated by ${user.displayName ?? user.username}: ${result.added} added, ${result.removed} removed, ${result.changed} re-versioned (${result.mods.length} total, applies on restart)`,
+          metadata: {
+            added: result.added,
+            removed: result.removed,
+            changed: result.changed,
+            total: result.mods.length,
+          },
         });
         res.json(result);
       } catch (error) {
@@ -735,6 +849,8 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
       next(error);
     }
   });
+
+  // ---------- power ----------
 
   const powerActions = [
     {
@@ -784,6 +900,8 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
     );
   }
 
+  // ---------- log ingestion ----------
+
   router.post(
     '/:slug/logs/sync',
     syncRateLimit,
@@ -811,25 +929,6 @@ export function createServerRouter(deps: ServerRouterDeps): Router {
           metadata: { createdEvents: result.createdEvents, processedLines: result.processedLines },
         });
         res.json(result);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
-  router.post(
-    '/:slug/config/sync',
-    syncRateLimit,
-    requireCapability('ops.health.view', 'Config sync is restricted to owner and server admins.'),
-    async (req, res, next) => {
-      try {
-        const server = await loadServer(req.params.slug);
-        if (!deps.configSync) {
-          throw ApiError.notConfigured('Config import requires a configured game server backend.');
-        }
-        // Config is served live; this just refreshes the stored name/capacity.
-        const result = await deps.configSync.sync(server);
-        res.json({ ok: true, serverName: result.serverName, maxPlayers: result.maxPlayers });
       } catch (error) {
         next(error);
       }

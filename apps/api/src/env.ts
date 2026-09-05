@@ -23,14 +23,23 @@ const envSchema = z
     DEV_AUTH_BYPASS: booleanString,
 
     REFORGER_WORKSHOP_API_BASE_URL: z.string().url().default('https://api.reforgermods.net'),
+    /** Optional paid-tier key; the free public tier needs no credentials. */
+    REFORGER_WORKSHOP_API_KEY: z.string().default(''),
 
     PTERODACTYL_BASE_URL: z.string().default(''),
     PTERODACTYL_CLIENT_API_KEY: z.string().default(''),
     PTERODACTYL_SERVER_ID: z.string().default(''),
     USE_MOCK_PTERODACTYL: booleanString,
+    /**
+     * Proxy Pterodactyl's Wings websocket for the live console and real-time
+     * resource metrics. Turn off to fall back to REST polling only.
+     */
+    PTERODACTYL_WEBSOCKET_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
 
     REFORGER_CONFIG_PATH: z.string().default('/config.json'),
-    REFORGER_CONFIG_SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(60).max(86400).default(300),
 
     REFORGER_ADMIN_LOG_PATH: z.string().default(''),
     REFORGER_LOG_DIRECTORY: z.string().default(''),

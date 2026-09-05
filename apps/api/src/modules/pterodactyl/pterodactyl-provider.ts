@@ -5,9 +5,11 @@ import type {
   ServerStatus,
 } from '@reforger-panel/shared';
 import { ApiError } from '../../lib/errors.js';
+import { mapPowerState } from './console-hub.js';
 import type {
   DownloadableFile,
   GameServerProvider,
+  ProviderServerLimits,
   ProviderServerResources,
   ServerFileEntry,
 } from './types.js';
@@ -15,6 +17,8 @@ import type {
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
+/** Plan limits change rarely, but not never; a minute keeps them honest. */
+const LIMITS_CACHE_TTL_MS = 60_000;
 
 type PterodactylOptions = {
   baseUrl: string;
@@ -59,21 +63,6 @@ type PterodactylScheduleAttributes = {
     };
   };
 };
-
-function mapState(state: string): ServerStatus {
-  switch (state) {
-    case 'running':
-      return 'online';
-    case 'offline':
-      return 'offline';
-    case 'starting':
-      return 'starting';
-    case 'stopping':
-      return 'stopping';
-    default:
-      return 'unknown';
-  }
-}
 
 /**
  * Pterodactyl Client API provider. Uses only client-scoped endpoints (status,
@@ -143,9 +132,9 @@ export class PterodactylProvider implements GameServerProvider {
     }
   }
 
-  private async getLimits(serverId: string) {
+  async getServerLimits(serverId: string): Promise<ProviderServerLimits> {
     const cached = this.limitsCache.get(serverId);
-    if (cached && Date.now() - cached.fetchedAt < 5 * 60_000) return cached;
+    if (cached && Date.now() - cached.fetchedAt < LIMITS_CACHE_TTL_MS) return cached;
     const data = await this.request<{
       attributes?: { limits?: { cpu?: number; memory?: number; disk?: number } };
     }>('server details', `/servers/${encodeURIComponent(serverId)}`);
@@ -182,14 +171,14 @@ export class PterodactylProvider implements GameServerProvider {
 
     const attrs = data.attributes ?? {};
     const res = attrs.resources ?? {};
-    const limits = await this.getLimits(serverId).catch(() => ({
+    const limits = await this.getServerLimits(serverId).catch(() => ({
       cpuLimitPercent: null,
       memoryLimitBytes: null,
       diskLimitBytes: null,
     }));
 
     return {
-      status: mapState(attrs.current_state ?? 'unknown'),
+      status: mapPowerState(attrs.current_state),
       cpuPercent: res.cpu_absolute ?? 0,
       cpuLimitPercent: limits.cpuLimitPercent,
       memoryBytes: res.memory_bytes ?? 0,

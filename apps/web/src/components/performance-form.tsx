@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react';
-import type { PerformanceSettings } from '@reforger-panel/shared';
+import { useMemo, useState } from 'react';
+import type { PerformanceSettings, PerformanceSettingsPatch } from '@reforger-panel/shared';
 import { usePerformanceSettings, useSetPerformanceSettings } from '../api/hooks.js';
-import { Button, Card, Spinner } from './ui.js';
+import { Button, EmptyState, Spinner, useToast } from './ui.js';
+import { Icon } from './icons.js';
 
 type NumberKey = {
   [K in keyof PerformanceSettings]: PerformanceSettings[K] extends number | null ? K : never;
 }[keyof PerformanceSettings];
-type BooleanKey = Exclude<keyof PerformanceSettings, NumberKey>;
+type BooleanKey = {
+  [K in keyof PerformanceSettings]: PerformanceSettings[K] extends boolean | null ? K : never;
+}[keyof PerformanceSettings];
 
 // Ranges/defaults from the Bohemia server-config reference. Blank fields are
 // omitted from config.json so the game default applies.
@@ -15,95 +18,114 @@ type BooleanKey = Exclude<keyof PerformanceSettings, NumberKey>;
 const NUMBER_FIELDS: { key: NumberKey; label: string; min: number; max: number; hint: string }[] = [
   {
     key: 'serverMaxViewDistance',
-    label: 'Server view distance (m)',
+    label: 'Server view distance',
     min: 500,
     max: 10000,
-    hint: 'default 1600',
+    hint: 'metres · default 1600',
   },
   {
     key: 'networkViewDistance',
-    label: 'Network view distance (m)',
+    label: 'Network view distance',
     min: 500,
     max: 5000,
-    hint: 'default 1500',
+    hint: 'metres · default 1500',
   },
   {
     key: 'serverMinGrassDistance',
-    label: 'Min grass distance (m)',
+    label: 'Min grass distance',
     min: 0,
     max: 150,
-    hint: '0 = client choice',
+    hint: 'metres · 0 = client choice',
   },
   { key: 'aiLimit', label: 'AI limit', min: -1, max: 1000, hint: '-1 = unlimited' },
   {
     key: 'playerSaveTime',
-    label: 'Player save interval (s)',
+    label: 'Player save interval',
     min: 1,
     max: 3600,
-    hint: 'default 120',
+    hint: 'seconds · default 120',
   },
   {
     key: 'slotReservationTimeout',
-    label: 'Slot reservation timeout (s)',
+    label: 'Slot reservation timeout',
     min: 5,
     max: 300,
-    hint: 'default 60',
+    hint: 'seconds · default 60',
   },
 ];
 
 const BOOLEAN_FIELDS: { key: BooleanKey; label: string; hint: string }[] = [
-  { key: 'disableAI', label: 'Disable AI', hint: 'default enabled' },
-  { key: 'disableThirdPerson', label: 'Disable third person', hint: 'default disabled' },
-  { key: 'fastValidation', label: 'Fast validation', hint: 'default enabled' },
-  { key: 'battlEye', label: 'BattlEye', hint: 'default enabled' },
-  { key: 'lobbyPlayerSynchronise', label: 'Lobby player sync', hint: 'default enabled' },
+  { key: 'disableAI', label: 'Disable AI', hint: 'default: AI enabled' },
+  { key: 'disableThirdPerson', label: 'Disable third person', hint: 'default: allowed' },
+  { key: 'fastValidation', label: 'Fast validation', hint: 'default: enabled' },
+  { key: 'battlEye', label: 'BattlEye', hint: 'default: enabled' },
+  { key: 'lobbyPlayerSynchronise', label: 'Lobby player sync', hint: 'default: enabled' },
 ];
 
-type FormState = Record<string, string>;
+type FieldKey = NumberKey | BooleanKey;
 
-function toFormState(settings: PerformanceSettings): FormState {
-  const state: FormState = {};
-  for (const field of NUMBER_FIELDS) {
-    const value = settings[field.key];
-    state[field.key] = value === null ? '' : String(value);
-  }
-  for (const field of BOOLEAN_FIELDS) {
-    const value = settings[field.key];
-    state[field.key] = value === null ? '' : String(value);
-  }
-  return state;
+function toText(value: number | boolean | null): string {
+  return value === null ? '' : String(value);
 }
 
+/**
+ * Curated, range-validated view of the performance settings.
+ *
+ * Only fields the user actually edits are submitted — the old form posted all
+ * thirteen values on every save, so a form loaded before somebody else's change
+ * silently reverted it on the next submit.
+ */
 export function PerformanceForm({ slug, canEdit }: { slug: string; canEdit: boolean }) {
-  const { data, isLoading, error: loadError } = usePerformanceSettings(slug);
+  const toast = useToast();
+  const { data, isLoading, error, refetch } = usePerformanceSettings(slug);
   const save = useSetPerformanceSettings(slug);
-  const [form, setForm] = useState<FormState | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    if (data && form === null) setForm(toFormState(data.settings));
-  }, [data, form]);
+  const [edits, setEdits] = useState<Map<FieldKey, string>>(new Map());
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<FieldKey, string>>>({});
 
-  if (isLoading || (!form && !loadError)) return <Spinner label="Downloading config.json…" />;
-  if (loadError) return <p className="text-sm text-danger-400">{loadError.message}</p>;
-  if (!form || !data) return null;
+  const baseline = data?.settings;
 
-  const baseline = toFormState(data.settings);
-  const dirty = Object.keys(form).some((key) => form[key] !== baseline[key]);
+  const dirtyKeys = useMemo(
+    () =>
+      [...edits.entries()]
+        .filter(([key, value]) => baseline && value !== toText(baseline[key]))
+        .map(([key]) => key),
+    [edits, baseline],
+  );
 
-  const set = (key: string, value: string) => {
-    setMessage(null);
-    setForm({ ...form, [key]: value });
+  if (isLoading) return <Spinner label="Downloading config.json…" />;
+  if (error || !data || !baseline) {
+    return (
+      <EmptyState
+        icon="alert"
+        title="Could not read the performance settings"
+        hint={error?.message}
+        action={
+          <Button icon="refresh" onClick={() => void refetch()}>
+            Retry
+          </Button>
+        }
+      />
+    );
+  }
+
+  const valueOf = (key: FieldKey): string => edits.get(key) ?? toText(baseline[key]);
+  const isDirty = (key: FieldKey) => dirtyKeys.includes(key);
+
+  const set = (key: FieldKey, value: string) => {
+    setEdits((current) => new Map(current).set(key, value));
+    setFieldErrors((current) => ({ ...current, [key]: undefined }));
   };
 
-  const validateAndBuild = (): PerformanceSettings | null => {
-    const errors: Record<string, string> = {};
-    const result = {} as Record<string, number | boolean | null>;
+  const submit = () => {
+    const errors: Partial<Record<FieldKey, string>> = {};
+    const patch: PerformanceSettingsPatch = {};
+
     for (const field of NUMBER_FIELDS) {
-      const raw = (form[field.key] ?? '').trim();
+      if (!isDirty(field.key)) continue;
+      const raw = valueOf(field.key).trim();
       if (raw === '') {
-        result[field.key] = null;
+        patch[field.key] = null;
         continue;
       }
       const value = Number(raw);
@@ -111,86 +133,72 @@ export function PerformanceForm({ slug, canEdit }: { slug: string; canEdit: bool
         errors[field.key] = `Must be a whole number between ${field.min} and ${field.max}.`;
         continue;
       }
-      result[field.key] = value;
+      patch[field.key] = value;
     }
     for (const field of BOOLEAN_FIELDS) {
-      const raw = form[field.key] ?? '';
-      result[field.key] = raw === '' ? null : raw === 'true';
+      if (!isDirty(field.key)) continue;
+      const raw = valueOf(field.key);
+      patch[field.key] = raw === '' ? null : raw === 'true';
     }
+
     setFieldErrors(errors);
-    return Object.keys(errors).length > 0 ? null : (result as unknown as PerformanceSettings);
-  };
+    if (Object.values(errors).some(Boolean)) return;
 
-  const submit = () => {
-    const settings = validateAndBuild();
-    if (!settings) return;
-    save.mutate(settings, {
-      onSuccess: (result) => {
-        setForm(null); // re-derive from the fresh server response on next load
-        setMessage(
-          result.changedFields.length > 0
-            ? `Saved ${result.changedFields.length} change${result.changedFields.length === 1 ? '' : 's'} to config.json — restart the server to apply.`
-            : 'No changes to save.',
-        );
+    save.mutate(
+      { settings: patch, expectedRevision: data.revision, writeStartupVars: true },
+      {
+        onSuccess: (result) => {
+          setEdits(new Map());
+          void refetch();
+          toast(
+            result.changedFields.length > 0
+              ? `Saved ${result.changedFields.length} change${result.changedFields.length === 1 ? '' : 's'}. Restart to apply.`
+              : 'No changes to save.',
+            'ok',
+          );
+        },
+        onError: (saveError) => toast(saveError.message, 'danger'),
       },
-      onError: (saveError) => setMessage(saveError.message),
-    });
+    );
   };
-
-  const inputClass = (key: string) => `input w-32 ${fieldErrors[key] ? 'input-error' : ''}`;
 
   return (
-    <Card
-      title="Performance settings (config.json)"
-      action={
-        canEdit &&
-        dirty && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-warn-400">unsaved changes</span>
-            <Button onClick={() => setForm(toFormState(data.settings))} disabled={save.isPending}>
-              Discard
-            </Button>
-            <Button variant="accent" onClick={submit} disabled={save.isPending}>
-              {save.isPending ? 'Saving…' : 'Save to server'}
-            </Button>
-          </div>
-        )
-      }
-    >
-      <div className="grid gap-x-8 gap-y-4 md:grid-cols-2">
+    <div className="space-y-4">
+      <div className="grid gap-x-8 gap-y-3 md:grid-cols-2">
         {NUMBER_FIELDS.map((field) => (
-          <div key={field.key} className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm text-zinc-200">{field.label}</p>
-              <p className="text-xs text-slate-dim">
-                {field.min}–{field.max} · {field.hint} · blank = game default
-              </p>
-              {fieldErrors[field.key] && (
-                <p className="text-xs text-danger-400">{fieldErrors[field.key]}</p>
-              )}
-            </div>
+          <FieldRow
+            key={field.key}
+            label={field.label}
+            hint={`${field.min}–${field.max} · ${field.hint} · blank = game default`}
+            dirty={isDirty(field.key)}
+            error={fieldErrors[field.key]}
+            onReset={() => set(field.key, toText(baseline[field.key]))}
+          >
             <input
               type="number"
               inputMode="numeric"
               min={field.min}
               max={field.max}
               disabled={!canEdit}
-              value={form[field.key] ?? ''}
+              value={valueOf(field.key)}
               placeholder="default"
               onChange={(event) => set(field.key, event.target.value)}
-              className={inputClass(field.key)}
+              className={`input numeric w-32 ${fieldErrors[field.key] ? 'input-error' : ''}`}
             />
-          </div>
+          </FieldRow>
         ))}
+
         {BOOLEAN_FIELDS.map((field) => (
-          <div key={field.key} className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm text-zinc-200">{field.label}</p>
-              <p className="text-xs text-slate-dim">{field.hint}</p>
-            </div>
+          <FieldRow
+            key={field.key}
+            label={field.label}
+            hint={field.hint}
+            dirty={isDirty(field.key)}
+            onReset={() => set(field.key, toText(baseline[field.key]))}
+          >
             <select
               disabled={!canEdit}
-              value={form[field.key] ?? ''}
+              value={valueOf(field.key)}
               onChange={(event) => set(field.key, event.target.value)}
               className="input w-32"
             >
@@ -198,15 +206,72 @@ export function PerformanceForm({ slug, canEdit }: { slug: string; canEdit: bool
               <option value="true">Enabled</option>
               <option value="false">Disabled</option>
             </select>
-          </div>
+          </FieldRow>
         ))}
       </div>
-      {message && <p className="mt-4 text-xs text-accent-400">{message}</p>}
-      <p className="mt-4 text-xs text-slate-dim">
-        Values are validated against the ranges in the Bohemia server-config reference and written
-        directly to config.json (backup kept as config.json.bak). Network/identity settings (bind
-        address, ports, passwords) are never touched here. Changes apply on the next restart.
+
+      {canEdit && dirtyKeys.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-graphite-700 pt-3">
+          <span className="text-xs text-warn-400">
+            {dirtyKeys.length} field{dirtyKeys.length === 1 ? '' : 's'} changed
+          </span>
+          <div className="ml-auto flex gap-2">
+            <Button onClick={() => setEdits(new Map())} disabled={save.isPending}>
+              Discard
+            </Button>
+            <Button variant="accent" icon="upload" onClick={submit} loading={save.isPending}>
+              Apply to server
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <p className="text-2xs leading-5 text-slate-dim">
+        Values are validated against the Bohemia server-config reference and written directly to
+        config.json (the previous file is kept as config.json.bak). Network and identity settings —
+        bind address, ports, passwords — are never touched here. Changes apply on the next restart.
       </p>
-    </Card>
+    </div>
+  );
+}
+
+function FieldRow({
+  label,
+  hint,
+  dirty,
+  error,
+  onReset,
+  children,
+}: {
+  label: string;
+  hint: string;
+  dirty: boolean;
+  error?: string;
+  onReset: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={`flex items-center justify-between gap-4 rounded-sm px-2 py-1.5 ${dirty ? 'bg-accent-600/[0.07]' : ''}`}
+    >
+      <div className="min-w-0">
+        <p className="flex items-center gap-2 text-sm text-zinc-100">
+          {label}
+          {dirty && (
+            <button
+              type="button"
+              title="Revert to the value on the server"
+              onClick={onReset}
+              className="text-accent-400 hover:text-accent-300"
+            >
+              <Icon name="refresh" className="h-3 w-3" />
+            </button>
+          )}
+        </p>
+        <p className="text-2xs text-slate-dim">{hint}</p>
+        {error && <p className="text-2xs text-danger-400">{error}</p>}
+      </div>
+      {children}
+    </div>
   );
 }

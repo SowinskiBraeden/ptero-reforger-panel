@@ -1,124 +1,230 @@
 @import 'tailwindcss';
 
+/*
+ * Industrial graphite system.
+ *
+ * Three ideas hold it together: a narrow neutral ramp so nothing shouts, a
+ * small set of semantic signal colours reserved for state (never decoration),
+ * and tight geometry — 4px rhythm, small radii, hairline rules — so dense
+ * operational data reads as instrumentation rather than as a marketing page.
+ */
 @theme {
-  --color-graphite-950: #12161b;
-  --color-graphite-900: #191e24;
-  --color-graphite-850: #20262e;
-  --color-graphite-800: #29313a;
-  --color-graphite-700: #3a4552;
-  --color-graphite-600: #505c69;
-  --color-slate-ink: #b1bac4;
-  --color-slate-dim: #838e9a;
-  --color-accent-500: #6f8fab;
-  --color-accent-400: #9bb4ca;
-  --color-accent-600: #58758e;
-  --color-warn-400: #d2a85b;
-  --color-danger-400: #d37a70;
+  /* Surfaces, darkest (page) to lightest (raised). */
+  --color-graphite-950: #0e1116;
+  --color-graphite-900: #141920;
+  --color-graphite-850: #1a2028;
+  --color-graphite-800: #212832;
+  --color-graphite-700: #2b3441;
+  --color-graphite-600: #3b4655;
+  --color-graphite-500: #4d5a6b;
 
-  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
-}
+  /* Ink ramp. */
+  --color-slate-ink: #aab6c3;
+  --color-slate-dim: #78838f;
+  --color-slate-faint: #5a636f;
 
-body {
-  @apply bg-graphite-950 text-zinc-200 antialiased;
-  background: var(--color-graphite-950);
-}
+  /* Accent — used for interactive affordances and the primary series. */
+  --color-accent-700: #3f5a75;
+  --color-accent-600: #4d6f8f;
+  --color-accent-500: #6e93b5;
+  --color-accent-400: #9dbcd8;
+  --color-accent-300: #c2d7ea;
 
-button,
-a,
-input,
-select,
-textarea {
-  @apply outline-none;
-}
+  /* Signals. Reserved for state; never used to decorate. */
+  --color-ok-400: #5fbf8f;
+  --color-warn-400: #d6a548;
+  --color-danger-400: #d9695f;
+  --color-info-400: #7fb2e5;
 
-:focus-visible {
-  @apply ring-2 ring-accent-500/45 ring-offset-2 ring-offset-graphite-950;
-}
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
-::selection {
-  background: color-mix(in srgb, var(--color-accent-500) 35%, transparent);
-}
+  /* Small, hard radii. */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
 
-.panel-card {
-  /* min-w-0 lets cards shrink inside grid tracks instead of widening them. */
-  @apply min-w-0 rounded-lg border border-graphite-700/70 bg-graphite-900 shadow-sm shadow-black/20;
-}
-
-.panel-card-header {
-  @apply flex flex-wrap items-center justify-between gap-3 border-b border-graphite-700/60 px-5 py-4;
-}
-
-.panel-card-title {
-  @apply text-xs font-semibold uppercase tracking-[0.14em] text-slate-ink;
-}
-
-.page-title {
-  @apply text-2xl font-semibold text-zinc-100;
-  letter-spacing: 0;
+  /* Type scale, tuned for dense readouts. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.375rem;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.5rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 1.875rem;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.125rem;
 }
 
-.page-kicker {
-  @apply mt-1 max-w-2xl text-sm leading-6 text-slate-ink;
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-graphite-950 text-zinc-200 antialiased;
+  }
+
+  button,
+  a,
+  input,
+  select,
+  textarea {
+    @apply outline-none;
+  }
+
+  :focus-visible {
+    @apply ring-2 ring-accent-500/50 ring-offset-2 ring-offset-graphite-950;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent-500) 32%, transparent);
+  }
+
+  /* Quiet, thin scrollbars — the panel is full of scrolling regions. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-graphite-600) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-graphite-600);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-graphite-500);
+    background-clip: content-box;
+  }
 }
 
-.input {
-  @apply rounded-md border border-graphite-600 bg-graphite-950/55 px-3 py-2 text-sm text-zinc-200 shadow-sm transition-colors placeholder:text-slate-dim hover:border-slate-dim/70 focus:border-accent-500 disabled:cursor-not-allowed disabled:opacity-50;
+@layer components {
+  /* Numbers that update in place must not reflow their neighbours. */
+  .numeric {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  .panel-card {
+    /* min-w-0 lets cards shrink inside grid tracks instead of widening them. */
+    @apply min-w-0 rounded-md border border-graphite-700 bg-graphite-900;
+  }
+
+  .panel-card-header {
+    @apply flex flex-wrap items-center justify-between gap-3 border-b border-graphite-700 px-4 py-3;
+  }
+
+  .panel-card-title {
+    @apply text-2xs font-semibold uppercase tracking-[0.16em] text-slate-dim;
+  }
+
+  .page-title {
+    @apply text-2xl font-semibold tracking-tight text-zinc-50;
+  }
+
+  .page-kicker {
+    @apply mt-1 max-w-2xl text-sm leading-6 text-slate-ink;
+  }
+
+  /* Section label used above grouped controls and inside dense lists. */
+  .eyebrow {
+    @apply text-2xs font-semibold uppercase tracking-[0.16em] text-slate-dim;
+  }
+
+  .input {
+    @apply w-full rounded-sm border border-graphite-600 bg-graphite-950 px-2.5 py-1.5 text-sm text-zinc-100 transition-colors;
+    @apply placeholder:text-slate-faint hover:border-graphite-500 focus:border-accent-500;
+    @apply disabled:cursor-not-allowed disabled:opacity-45;
+  }
+
+  .input-error {
+    @apply border-danger-400/70 focus:border-danger-400;
+  }
+
+  /* No native number spinners — they clash with the theme. */
+  input[type='number'].input {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+  input[type='number'].input::-webkit-inner-spin-button,
+  input[type='number'].input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  /* Selects: replace the native chrome with a themed chevron. */
+  select.input {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2378838f' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    padding-right: 1.9rem;
+  }
+  select.input option {
+    @apply bg-graphite-850 text-zinc-100;
+  }
+
+  .data-table-scroll {
+    @apply overflow-x-auto;
+  }
+
+  .data-table {
+    @apply w-full min-w-fit text-sm;
+  }
+
+  .data-table th,
+  .data-table td {
+    @apply whitespace-nowrap pr-4 last:pr-0;
+  }
+
+  .data-table thead tr {
+    @apply border-b border-graphite-700 text-left text-2xs uppercase tracking-[0.12em] text-slate-dim;
+  }
+
+  .data-table th {
+    @apply pb-2 font-semibold;
+  }
+
+  .data-table tbody tr {
+    @apply border-b border-graphite-800 last:border-0 hover:bg-graphite-850/60;
+  }
+
+  .data-table td {
+    @apply py-2;
+  }
+
+  /* Terminal surface shared by the console and the activity feed. */
+  .console-surface {
+    @apply rounded-sm border border-graphite-800 bg-[#0a0d11] font-mono text-xs;
+  }
 }
 
-.input-error {
-  @apply border-danger-400/70 focus:border-danger-400 focus:ring-danger-400/30;
-}
+@layer utilities {
+  @keyframes rp-fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
 
-/* No native number spinners — they clash with the theme. */
-input[type='number'].input {
-  appearance: textfield;
-  -moz-appearance: textfield;
-}
-input[type='number'].input::-webkit-inner-spin-button,
-input[type='number'].input::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-/* Selects: replace the native chrome with a themed chevron. */
-select.input {
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b98a5' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.65rem center;
-  padding-right: 2rem;
-}
-select.input option {
-  @apply bg-graphite-850 text-zinc-200;
-}
-
-.data-table-scroll {
-  @apply overflow-x-auto;
-}
-
-.data-table {
-  @apply w-full min-w-fit text-sm;
-}
-
-.data-table th,
-.data-table td {
-  @apply whitespace-nowrap pr-4 last:pr-0;
-}
-
-.data-table thead tr {
-  @apply border-b border-graphite-700/60 text-left text-[11px] uppercase tracking-wider text-slate-dim;
-}
-
-.data-table th {
-  @apply pb-2 font-medium;
-}
-
-.data-table tbody tr {
-  @apply border-b border-graphite-800/80 last:border-0 hover:bg-graphite-850/50;
-}
-
-.data-table td {
-  @apply py-2.5;
+  .animate-fade-in {
+    animation: rp-fade-in 120ms ease-out;
+  }
 }

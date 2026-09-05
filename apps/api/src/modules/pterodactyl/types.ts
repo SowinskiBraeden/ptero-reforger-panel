@@ -4,6 +4,12 @@ import type {
   ServerStatus,
 } from '@reforger-panel/shared';
 
+export type ProviderServerLimits = {
+  cpuLimitPercent: number | null;
+  memoryLimitBytes: number | null;
+  diskLimitBytes: number | null;
+};
+
 export type ProviderServerResources = {
   status: ServerStatus;
   cpuPercent: number;
@@ -42,6 +48,12 @@ export type DownloadableFile = {
 export interface GameServerProvider {
   getServerStatus(serverId: string): Promise<ServerStatus>;
   getServerResources(serverId: string): Promise<ProviderServerResources>;
+  /**
+   * Plan limits, cached by the implementation. Split out from resources so a
+   * live websocket stats frame (which carries usage but not limits) can still
+   * be rendered with a denominator.
+   */
+  getServerLimits(serverId: string): Promise<ProviderServerLimits>;
 
   startServer(serverId: string): Promise<void>;
   stopServer(serverId: string): Promise<void>;

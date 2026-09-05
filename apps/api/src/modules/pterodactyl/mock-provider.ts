@@ -7,6 +7,7 @@ import { ApiError } from '../../lib/errors.js';
 import type {
   DownloadableFile,
   GameServerProvider,
+  ProviderServerLimits,
   ProviderServerResources,
   ServerFileEntry,
 } from './types.js';
@@ -138,11 +139,11 @@ export class MockGameServerProvider implements GameServerProvider {
   }
 
   private transition(to: ServerStatus, after: number, thenTo: ServerStatus) {
-    this.status = to;
+    this.setStatus(to);
     if (this.transitionTimer) clearTimeout(this.transitionTimer);
     this.transitionTimer = setTimeout(() => {
-      this.status = thenTo;
       if (thenTo === 'online') this.startedAt = Date.now();
+      this.setStatus(thenTo);
       this.transitionTimer = null;
     }, after);
     this.transitionTimer.unref?.();
@@ -150,6 +151,32 @@ export class MockGameServerProvider implements GameServerProvider {
 
   async getServerStatus(): Promise<ServerStatus> {
     return this.status;
+  }
+
+  /** Exposed so the panel can subscribe to simulated power transitions. */
+  get currentStatus(): ServerStatus {
+    return this.status;
+  }
+
+  onStatusChange(listener: (status: ServerStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  private readonly statusListeners = new Set<(status: ServerStatus) => void>();
+
+  private setStatus(status: ServerStatus): void {
+    if (this.status === status) return;
+    this.status = status;
+    for (const listener of this.statusListeners) listener(status);
+  }
+
+  async getServerLimits(): Promise<ProviderServerLimits> {
+    return {
+      cpuLimitPercent: 400,
+      memoryLimitBytes: 8 * 1024 ** 3,
+      diskLimitBytes: 40 * 1024 ** 3,
+    };
   }
 
   async getServerResources(): Promise<ProviderServerResources> {
@@ -183,8 +210,8 @@ export class MockGameServerProvider implements GameServerProvider {
     this.transition('stopping', STOP_DELAY_MS, 'starting');
     setTimeout(() => {
       if (this.status === 'starting') {
-        this.status = 'online';
         this.startedAt = Date.now();
+        this.setStatus('online');
       }
     }, STOP_DELAY_MS + START_DELAY_MS).unref?.();
   }
@@ -215,6 +242,30 @@ export class MockGameServerProvider implements GameServerProvider {
   }
 
   private startupVariables = [
+    {
+      name: 'Server Name',
+      description: 'Templated into config.json at boot by the egg.',
+      envVariable: 'SERVER_NAME',
+      serverValue: 'Mock Reforger Server',
+      defaultValue: 'Arma Reforger Server',
+      isEditable: true,
+    },
+    {
+      name: 'Max Players',
+      description: 'Templated into config.json at boot by the egg.',
+      envVariable: 'MAX_PLAYERS',
+      serverValue: '16',
+      defaultValue: '64',
+      isEditable: true,
+    },
+    {
+      name: 'Scenario ID',
+      description: 'Templated into config.json at boot by the egg.',
+      envVariable: 'SCENARIO_ID',
+      serverValue: '{FDE33AFE2ED7875B}Missions/23_Campaign_Montignac.conf',
+      defaultValue: '{ECC61978EDCC2B5A}Missions/23_Campaign.conf',
+      isEditable: true,
+    },
     {
       name: 'Server Password',
       description: 'Password required to join the server.',

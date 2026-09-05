@@ -1,6 +1,6 @@
 import type { ResourceHistoryResponse, ResourceSample } from '@reforger-panel/shared';
 import type { Logger } from '../../lib/logger.js';
-import type { GameServerProvider } from '../pterodactyl/types.js';
+import type { ServerMetricsService } from './metrics-service.js';
 
 export const SAMPLE_INTERVAL_SECONDS = 15;
 const MAX_SAMPLES = 240; // ~1 hour window
@@ -9,8 +9,12 @@ type RawSample = ResourceSample & { rxTotal: number; txTotal: number };
 
 /**
  * In-memory rolling window of resource usage for the dashboard graphs.
- * Network rates are derived from the provider's cumulative rx/tx counters;
- * history is intentionally not persisted (it is telemetry, not records).
+ * Network rates are derived from the cumulative rx/tx counters; history is
+ * intentionally not persisted (it is telemetry, not records).
+ *
+ * Samples come from ServerMetricsService, so when the Wings websocket is up
+ * this reads an already-pushed frame rather than issuing its own HTTP request
+ * every 15 seconds.
  */
 export class ResourceHistoryService {
   private samples = new Map<string, RawSample[]>();
@@ -18,7 +22,7 @@ export class ResourceHistoryService {
   private servers: { serverId: string; providerServerId: string }[] = [];
 
   constructor(
-    private readonly provider: GameServerProvider,
+    private readonly metrics: ServerMetricsService,
     private readonly logger: Logger,
     private readonly intervalSeconds: number = SAMPLE_INTERVAL_SECONDS,
   ) {}
@@ -62,7 +66,7 @@ export class ResourceHistoryService {
   }
 
   private async sampleOne(serverId: string, providerServerId: string): Promise<void> {
-    const resources = await this.provider.getServerResources(providerServerId);
+    const resources = await this.metrics.getResources(providerServerId);
     const previous = this.samples.get(serverId)?.at(-1);
     const now = Date.now();
 

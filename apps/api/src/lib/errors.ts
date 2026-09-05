@@ -38,6 +38,9 @@ export class ApiError extends Error {
   static rateLimited(message = 'Too many requests. Try again shortly.') {
     return new ApiError('RATE_LIMITED', message);
   }
+  static conflict(message = 'This resource changed since you loaded it.') {
+    return new ApiError('CONFLICT', message);
+  }
   static upstream(message = 'An upstream service is unavailable.') {
     return new ApiError('UPSTREAM_UNAVAILABLE', message);
   }

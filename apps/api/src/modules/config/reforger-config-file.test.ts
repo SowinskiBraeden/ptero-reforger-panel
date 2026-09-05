@@ -38,7 +38,7 @@ const REAL_SHAPE = {
     lobbyPlayerSynchronise: true,
     disableAI: false,
     aiLimit: -1,
-    playerSaveTime: 120
+    playerSaveTime: 120,
   },
 };
 
@@ -46,7 +46,7 @@ describe('parseReforgerConfigJson', () => {
   it('maps a real-shaped config.json into the panel model', () => {
     const config = parseReforgerConfigJson(JSON.stringify(REAL_SHAPE));
     expect(config).toEqual({
-      serverName: 'DazzledCorp Training Grounds',
+      serverName: 'DZR Training Grounds',
       maxPlayers: 16,
       scenarioId: '{ECC61978EDCC2B5A}Missions/23_Campaign.conf',
       disableAI: false,
@@ -57,7 +57,7 @@ describe('parseReforgerConfigJson', () => {
       disableThirdPerson: true,
       mods: [
         { modId: '591AF5BDA9F7CE8B', name: 'Some Mod', version: '1.0.2' },
-        { modId: '5AAF0CCE3F001FB5' },
+        { modId: '5AAF0CCE3F001FB5', name: undefined, version: undefined },
       ],
     });
   });

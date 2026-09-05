@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type {
   ActivityItem,
   Capability,
@@ -13,10 +12,10 @@ import {
   useManualLogSync,
   usePlayers,
   usePowerAction,
-  useWorkshopHealth,
 } from '../api/hooks.js';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../lib/format.js';
-import { Button, Card, EmptyState, Spinner } from './ui.js';
+import { Badge, Button, Card, EmptyState, Spinner, useToast } from './ui.js';
+import { shortScenario } from './mission-card.js';
 
 function can(user: CurrentUser, capability: Capability): boolean {
   return user.capabilities.includes(capability);
@@ -24,14 +23,18 @@ function can(user: CurrentUser, capability: Capability): boolean {
 
 export function PowerControls({ user, server }: { user: CurrentUser; server: ServerSummary }) {
   const power = usePowerAction(server.slug);
-  const [message, setMessage] = useState<string | null>(null);
+  const toast = useToast();
 
   const run = (action: 'start' | 'stop' | 'restart') => {
-    setMessage(null);
     power.mutate(action, {
       onSuccess: (result) =>
-        setMessage(result.simulated ? `${action} simulated (mock mode)` : `${action} requested`),
-      onError: (error) => setMessage(error.message),
+        toast(
+          result.simulated
+            ? `${action} simulated (mock mode) — watch the Console`
+            : `${action} requested — watch the Console for live output`,
+          'ok',
+        ),
+      onError: (error) => toast(error.message, 'danger'),
     });
   };
 
@@ -40,32 +43,37 @@ export function PowerControls({ user, server }: { user: CurrentUser; server: Ser
   const canRestart = can(user, 'server.power.restart');
   if (!canStart && !canStop && !canRestart) return null;
 
+  const busy = power.isPending || server.status === 'starting' || server.status === 'stopping';
+
   return (
-    <div className="flex w-full flex-wrap items-center justify-end gap-2 md:w-auto">
+    <div className="flex flex-wrap items-center justify-end gap-1.5">
       {canStart && (
         <Button
+          size="sm"
           variant="accent"
-          disabled={power.isPending || server.status === 'online'}
+          icon="play"
+          disabled={busy || server.status === 'online'}
           onClick={() => run('start')}
         >
           Start
         </Button>
       )}
       {canRestart && (
-        <Button disabled={power.isPending} onClick={() => run('restart')}>
+        <Button size="sm" icon="restart" disabled={busy} onClick={() => run('restart')}>
           Restart
         </Button>
       )}
       {canStop && (
         <Button
+          size="sm"
           variant="danger"
-          disabled={power.isPending || server.status === 'offline'}
+          icon="stop"
+          disabled={busy || server.status === 'offline'}
           onClick={() => run('stop')}
         >
           Stop
         </Button>
       )}
-      {message && <span className="text-xs text-slate-dim">{message}</span>}
     </div>
   );
 }
@@ -83,11 +91,11 @@ export function CurrentPlayersCard({
       title="Current players"
       action={
         data && (
-          <span className="text-xs text-slate-dim">
+          <span className="text-2xs text-slate-dim">
             {data.stale ? (
               <span className="text-warn-400">data may be stale</span>
             ) : (
-              <>last synchronized {formatRelativeTime(data.lastSyncedAt)}</>
+              <>synced {formatRelativeTime(data.lastSyncedAt)}</>
             )}
           </span>
         )
@@ -111,14 +119,15 @@ function PlayersTable({
 }) {
   return (
     <div>
-      <p className="mb-4 text-3xl font-semibold text-zinc-100">
+      <p className="numeric mb-4 text-3xl font-semibold leading-none text-zinc-50">
         {players.onlineCount}
-        <span className="text-base font-normal text-slate-dim"> / {maxPlayers ?? '—'} online</span>
+        <span className="text-sm font-normal text-slate-dim"> / {maxPlayers ?? '—'} online</span>
       </p>
       {players.players.length === 0 ? (
         <EmptyState
+          icon="users"
           title="No players connected"
-          hint="Player presence is reconstructed from server logs and updates on each sync."
+          hint="Player presence is reconstructed from the server log and updates on each sync."
         />
       ) : (
         <div className="data-table-scroll">
@@ -133,9 +142,9 @@ function PlayersTable({
             <tbody>
               {players.players.map((player) => (
                 <tr key={player.playerId}>
-                  <td className="py-2 font-medium text-zinc-200">{player.displayName}</td>
-                  <td className="py-2 text-slate-ink">{formatDateTime(player.connectedAt)}</td>
-                  <td className="py-2 text-right font-mono text-xs text-accent-400">
+                  <td className="font-medium text-zinc-100">{player.displayName}</td>
+                  <td className="numeric text-slate-ink">{formatDateTime(player.connectedAt)}</td>
+                  <td className="numeric text-right text-xs text-accent-400">
                     {formatDuration(player.sessionDurationSeconds)}
                   </td>
                 </tr>
@@ -149,9 +158,9 @@ function PlayersTable({
 }
 
 const ACTIVITY_COLORS: Record<string, string> = {
-  player_connected: 'text-accent-400',
+  player_connected: 'text-ok-400',
   player_disconnected: 'text-slate-ink',
-  server_started: 'text-accent-400',
+  server_started: 'text-ok-400',
   server_stopped: 'text-warn-400',
   server_restart_detected: 'text-warn-400',
   log_sync_failed: 'text-danger-400',
@@ -173,28 +182,31 @@ export function ActivityList({
 }) {
   if (items.length === 0) {
     return (
-      <EmptyState title="No activity yet" hint="Panel actions and server events appear here." />
+      <EmptyState
+        icon="pulse"
+        title="No activity yet"
+        hint="Panel actions and server events appear here."
+      />
     );
   }
   return (
-    <div
-      className="overflow-y-auto rounded-md border border-graphite-800 bg-graphite-950/70 font-mono text-xs shadow-inner"
-      style={{ maxHeight }}
-    >
+    <div className="console-surface overflow-y-auto" style={{ maxHeight }}>
       <ul>
         {items.map((item) => (
           <li
             key={item.id}
-            className="flex items-baseline gap-3 border-b border-graphite-800/60 px-3 py-1.5 last:border-0 hover:bg-graphite-850/80"
+            className="flex items-baseline gap-3 border-b border-graphite-800/60 px-3 py-1.5 last:border-0 hover:bg-graphite-900/70"
             title={new Date(item.occurredAt).toLocaleString()}
           >
-            <span className="shrink-0 text-slate-dim">{logTimestamp(item.occurredAt)}</span>
+            <span className="numeric shrink-0 text-slate-faint">
+              {logTimestamp(item.occurredAt)}
+            </span>
             <span
               className={`min-w-0 flex-1 truncate ${ACTIVITY_COLORS[item.action] ?? 'text-zinc-300'}`}
             >
               {item.summary}
             </span>
-            <span className="shrink-0 text-[10px] uppercase tracking-wider text-slate-dim">
+            <span className="shrink-0 text-2xs uppercase tracking-wider text-slate-faint">
               {item.kind === 'panel_action' ? 'panel' : 'server'}
             </span>
           </li>
@@ -213,33 +225,25 @@ export function RecentActivityCard({ slug, limit = 50 }: { slug: string; limit?:
   );
 }
 
-/** Display form of a scenario id: just the file name, e.g. "23_Campaign.conf". */
-export function shortScenario(scenarioId: string): string {
-  const slash = scenarioId.lastIndexOf('/');
-  return slash >= 0 ? scenarioId.slice(slash + 1) : scenarioId;
-}
-
 export function ConfigSummaryRows({ config }: { config: ConfigurationResponse }) {
   const c = config.config;
-  const rows: [string, string][] = [
-    ['Mission', shortScenario(c.scenarioId)],
+  const rows: [string, string, string?][] = [
+    ['Mission', shortScenario(c.scenarioId), c.scenarioId],
     ['Max players', String(c.maxPlayers)],
     // Reforger uses -1 for "no AI limit".
     ['AI limit', c.aiLimit < 0 ? 'Unlimited' : String(c.aiLimit)],
-    ['View distance', `${c.serverMaxViewDistance} m (network ${c.networkViewDistance} m)`],
+    ['View distance', `${c.serverMaxViewDistance} m`],
+    ['Network view distance', `${c.networkViewDistance} m`],
     ['Third person', c.disableThirdPerson ? 'Disabled' : 'Allowed'],
     ['Cross-platform', c.crossPlatform ? 'Enabled' : 'Disabled'],
-    ['Mods', `${c.mods.length}`],
+    ['Mods', String(c.mods.length)],
   ];
   return (
-    <dl className="space-y-2">
-      {rows.map(([label, value]) => (
+    <dl className="space-y-1.5">
+      {rows.map(([label, value, title]) => (
         <div key={label} className="flex items-baseline justify-between gap-4">
-          <dt className="shrink-0 text-xs uppercase tracking-wider text-slate-dim">{label}</dt>
-          <dd
-            className="truncate text-right font-mono text-xs text-zinc-300"
-            title={label === 'Mission' ? c.scenarioId : value}
-          >
+          <dt className="eyebrow shrink-0">{label}</dt>
+          <dd className="numeric truncate text-right text-xs text-zinc-200" title={title ?? value}>
             {value}
           </dd>
         </div>
@@ -248,86 +252,84 @@ export function ConfigSummaryRows({ config }: { config: ConfigurationResponse })
   );
 }
 
+/**
+ * Log-ingestion diagnostics. The reforgermods.net probe that used to sit here
+ * was removed: it polled every minute, told nobody anything actionable, and
+ * the Workshop cache degrades gracefully on its own.
+ */
 export function OpsHealthCard({ user, slug }: { user: CurrentUser; slug: string }) {
   const visible = can(user, 'ops.health.view');
-  const { data: workshop } = useWorkshopHealth();
   const { data: logs } = useLogHealth(slug, visible);
   const syncNow = useManualLogSync(slug);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const toast = useToast();
   if (!visible) return null;
 
   return (
     <Card
-      title="Operational health"
+      title="Log ingestion"
       action={
         can(user, 'logs.sync') && (
           <Button
-            disabled={syncNow.isPending || logs?.configured === false}
+            size="sm"
+            icon="refresh"
+            loading={syncNow.isPending}
+            disabled={logs?.configured === false}
             onClick={() =>
               syncNow.mutate(undefined, {
                 onSuccess: (result) =>
-                  setSyncMessage(
-                    `Synced: ${result.processedLines} lines, ${result.createdEvents} new events`,
+                  toast(
+                    `Synced ${result.processedLines} lines, ${result.createdEvents} new events`,
+                    'ok',
                   ),
-                onError: (error) => setSyncMessage(error.message),
+                onError: (error) => toast(error.message, 'danger'),
               })
             }
           >
-            {syncNow.isPending ? 'Syncing…' : 'Sync logs now'}
+            Sync now
           </Button>
         )
       }
     >
       <dl className="space-y-2 text-sm">
-        <div className="flex items-center justify-between">
-          <dt className="text-slate-ink">Workshop API</dt>
-          <dd>
-            {workshop ? (
-              workshop.ok ? (
-                <span className="text-accent-400">
-                  healthy · {workshop.latencyMs} ms · {formatRelativeTime(workshop.checkedAt)}
-                </span>
-              ) : (
-                <span className="text-danger-400" title={workshop.message ?? undefined}>
-                  unreachable
-                </span>
-              )
-            ) : (
-              <span className="text-slate-dim">checking…</span>
-            )}
-          </dd>
-        </div>
-        <div className="flex items-center justify-between">
-          <dt className="text-slate-ink">Log ingestion</dt>
+        <div className="flex items-center justify-between gap-4">
+          <dt className="text-slate-ink">Status</dt>
           <dd>
             {!logs ? (
               <span className="text-slate-dim">checking…</span>
             ) : !logs.configured ? (
-              <span className="text-slate-dim">not configured</span>
+              <Badge>not configured</Badge>
             ) : logs.stale ? (
-              <span className="text-warn-400">stale</span>
+              <Badge tone="warn">stale</Badge>
             ) : (
-              <span className="text-accent-400">healthy</span>
+              <Badge tone="ok">healthy</Badge>
             )}
           </dd>
         </div>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <dt className="text-slate-ink">Last successful sync</dt>
-          <dd className="text-zinc-300">
+          <dd className="numeric text-xs text-zinc-200">
             {formatRelativeTime(logs?.lastSuccessfulSyncAt ?? null)}
           </dd>
         </div>
         {logs?.lastSync && (
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <dt className="text-slate-ink">Last sync processed</dt>
-            <dd className="font-mono text-xs text-zinc-300">
+            <dd className="numeric text-xs text-zinc-200">
               {logs.lastSync.processedLines} lines · {logs.lastSync.createdEvents} events
+            </dd>
+          </div>
+        )}
+        {logs?.logPath && (
+          <div className="flex items-center justify-between gap-4">
+            <dt className="text-slate-ink">Log file</dt>
+            <dd className="truncate font-mono text-2xs text-slate-dim" title={logs.logPath}>
+              {logs.logPath}
             </dd>
           </div>
         )}
         {logs?.lastErrorMessage && (
           <div className="flex items-center justify-between gap-4">
-            <dt className="shrink-0 text-slate-ink">Last sync error</dt>
+            <dt className="shrink-0 text-slate-ink">Last error</dt>
             <dd
               className="truncate text-xs text-danger-400"
               title={`${formatRelativeTime(logs.lastErrorAt)}: ${logs.lastErrorMessage}`}
@@ -336,7 +338,6 @@ export function OpsHealthCard({ user, slug }: { user: CurrentUser; slug: string 
             </dd>
           </div>
         )}
-        {syncMessage && <p className="text-xs text-slate-dim">{syncMessage}</p>}
       </dl>
     </Card>
   );

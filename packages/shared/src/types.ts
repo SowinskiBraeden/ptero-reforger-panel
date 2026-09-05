@@ -1,5 +1,5 @@
 import type { Capability, Role } from './roles.js';
-import type { ReforgerServerConfig } from './reforger-config.js';
+import type { ReforgerConfigMod, ReforgerServerConfig } from './reforger-config.js';
 
 // ---------- API envelope ----------
 
@@ -73,6 +73,11 @@ export type ServerResources = {
   networkTxBytes: number;
   uptimeMs: number;
   fetchedAt: string;
+  /**
+   * Where the numbers came from. 'live' means a Wings `stats` frame pushed
+   * within the last few seconds; 'poll' means the slower REST fallback.
+   */
+  source: 'live' | 'poll';
 };
 
 // ---------- Players ----------
@@ -140,22 +145,95 @@ export type KillfeedEvent = {
 /** The live config.json, downloaded from the server on request. */
 export type ConfigurationResponse = {
   config: ReforgerServerConfig;
+  revision: string;
   fetchedAt: string;
 };
 
+export type ConfigValueType = 'string' | 'number' | 'boolean' | 'null' | 'array' | 'object';
+
+/** One leaf of config.json, addressed by dotted path (e.g. `game.maxPlayers`). */
+export type ConfigEntry = {
+  path: string;
+  value: string | number | boolean | null;
+  type: ConfigValueType;
+  /** JSON text for values the flat editor cannot represent inline. */
+  raw?: string;
+};
+
+/**
+ * A config.json key that some Reforger eggs re-template from a Pterodactyl
+ * startup variable at boot. Editing the file alone would be silently undone.
+ */
+export type StartupMirror = {
+  envVariable: string;
+  configPath: string;
+  startupValue: string;
+  configValue: string | number | boolean | null;
+  /** True when the two currently disagree. */
+  conflict: boolean;
+};
+
+export type ConfigTreeResponse = {
+  entries: ConfigEntry[];
+  mirrors: StartupMirror[];
+  revision: string;
+  fetchedAt: string;
+};
+
+/** `value: null` removes the key so the game default applies. */
+export type ConfigPatchOp = {
+  path: string;
+  value: string | number | boolean | null;
+};
+
+export type ConfigPatchRequest = {
+  ops: ConfigPatchOp[];
+  /** Revision the edits were based on; a mismatch is rejected as a conflict. */
+  expectedRevision?: string;
+  /** Also mirror changed values into their matching startup variables. */
+  writeStartupVars?: boolean;
+};
+
+export type ConfigPatchResult = {
+  changedPaths: string[];
+  startupVarsWritten: string[];
+  revision: string;
+  fetchedAt: string;
+  requiresRestart: true;
+};
+
+export type ConfigRawResponse = {
+  content: string;
+  revision: string;
+  fetchedAt: string;
+};
+
+// ---------- Missions ----------
+
 export type MissionInfo = {
   scenarioId: string;
-  /** Display name for the scenario, e.g. "Campaign - Montignac". */
+  /** Display name, e.g. "Conflict - Everon". */
   name: string;
-  /** 'official' or a mod source such as "mod: Scenario Pack". */
-  source: string;
+  gameMode: string | null;
+  playerCount: number | null;
+};
+
+export type MissionGroup = {
+  /** 'official', or the workshop mod id that ships these scenarios. */
+  id: string;
+  label: string;
+  kind: 'official' | 'mod';
+  missions: MissionInfo[];
 };
 
 export type MissionsResponse = {
-  missions: MissionInfo[];
-  /** Null when the source could not be checked. */
+  groups: MissionGroup[];
+  /** Installed mods whose scenario list could not be resolved this time. */
+  incompleteModIds: string[];
   fetchedAt: string | null;
 };
+
+// ---------- Logs ----------
 
 export type RawLogsResponse = {
   path: string;
@@ -176,6 +254,24 @@ export type StartupVariable = {
 export type StartupResponse = {
   variables: StartupVariable[];
   fetchedAt: string;
+};
+
+// ---------- Live console (Pterodactyl / Wings) ----------
+
+export type ConsoleLineStream = 'console' | 'install' | 'daemon';
+
+export type ConsoleLine = {
+  /** Monotonic per-connection sequence number, for de-duplication. */
+  seq: number;
+  stream: ConsoleLineStream;
+  text: string;
+  at: number;
+};
+
+export type ConsoleBacklog = {
+  lines: ConsoleLine[];
+  status: ServerStatus;
+  connected: boolean;
 };
 
 // ---------- Schedules ----------
@@ -273,6 +369,7 @@ export type PerformanceSettings = {
 
 export type PerformanceSettingsResponse = {
   settings: PerformanceSettings;
+  revision: string;
   fetchedAt: string;
 };
 
@@ -295,52 +392,119 @@ export type InviteSummary = {
 // ---------- Server mods (game.mods in config.json) ----------
 
 export type ServerModsResponse = {
-  mods: { modId: string; name?: string; version?: string }[];
-  /** When the config.json this list came from was downloaded. */
+  mods: ReforgerConfigMod[];
+  /** sha256 of the config.json this list came from; required to write it back. */
+  revision: string;
   fetchedAt: string;
 };
 
-export type ModDependencyIssue = {
-  modId: string;
-  modName: string | null;
-  missing: Array<{ id: string | null; name: string }>;
+/** Workshop metadata attached to an installed mod. Null when unresolvable. */
+export type ModWorkshopInfo = {
+  name: string;
+  author: string;
+  summary: string | null;
+  imageUrl: string | null;
+  workshopUrl: string | null;
+  latestVersion: string | null;
+  gameVersion: string | null;
+  sizeBytes: number | null;
+  scenarioCount: number;
+  dependencyCount: number;
+  obsolete: boolean;
+  tags: string[];
 };
 
-export type ModsCheckResponse = {
-  modsWithMissingVersions: string[];
-  modsWithMissingDeps: ModDependencyIssue[];
-  /** Non-null when the server's configured scenarioId is not in any known mission source. */
-  orphanedMission: { scenarioId: string; name: string | null } | null;
-  checkedAt: string;
+export type ModOverviewEntry = {
+  modId: string;
+  /** Name recorded in config.json, if any. */
+  configName: string | null;
+  /** Version pinned in config.json; null means "track latest". */
+  pinnedVersion: string | null;
+  workshop: ModWorkshopInfo | null;
+  updateAvailable: boolean;
+  /** Dependencies of this mod that are missing from the server's list. */
+  missingDependencies: WorkshopDependency[];
+  /** Ids of installed mods that depend on this one — blockers for removal. */
+  requiredBy: string[];
+};
+
+export type ModsOverviewResponse = {
+  mods: ModOverviewEntry[];
+  revision: string;
+  fetchedAt: string;
+  totalSizeBytes: number | null;
+  updatesAvailable: number;
+  /** Mod ids the Workshop could not resolve (private, delisted, or upstream down). */
+  unresolvedIds: string[];
+  /** True while lookups are still warming; refetch shortly for complete data. */
+  warming: boolean;
+  /** Set when config.json's scenarioId is not offered by anything installed. */
+  orphanedMission: { scenarioId: string } | null;
+};
+
+export type ResolvedMod = {
+  modId: string;
+  name: string | null;
+  version: string | null;
+  sizeBytes: number | null;
+  /** True when pulled in as a dependency rather than explicitly requested. */
+  viaDependency: boolean;
+  /** Requested mods that require this one. */
+  requiredBy: string[];
+};
+
+export type ModResolveResponse = {
+  /** The requested list plus every dependency needed to make it load. */
+  mods: ResolvedMod[];
+  /** The subset that had to be added to satisfy dependencies. */
+  addedDependencies: ResolvedMod[];
+  totalSizeBytes: number | null;
+  unresolvedIds: string[];
 };
 
 export type UpdateModsResult = ServerModsResponse & {
   added: number;
   removed: number;
+  changed: number;
   /** Reforger only picks up config changes on the next server restart. */
   requiresRestart: true;
 };
 
-// ---------- Workshop ----------
+// ---------- Workshop (reforgermods.net v2) ----------
 
-export type WorkshopHealth = {
-  ok: boolean;
-  latencyMs: number | null;
-  checkedAt: string;
-  message: string | null;
-};
+export const WORKSHOP_SORTS = [
+  'popularity',
+  'most-rated',
+  'highest-rated',
+  'subscribers',
+  'newest',
+  'created',
+  'recently-updated',
+  'largest',
+  'name',
+] as const;
+
+export type WorkshopSort = (typeof WORKSHOP_SORTS)[number];
 
 export type WorkshopModPreview = {
   id: string;
   name: string;
   author: string;
+  summary: string | null;
   imageUrl: string | null;
-  size: string | null;
-  rating: string | null;
   workshopUrl: string | null;
   version: string | null;
-  summary: string | null;
+  gameVersion: string | null;
+  sizeBytes: number | null;
+  sizeText: string | null;
+  /** 0–1. */
+  rating: number | null;
+  ratingCount: number | null;
+  subscriberCount: number | null;
+  createdAt: string | null;
+  updatedAt: string | null;
   tags: string[];
+  obsolete: boolean;
 };
 
 export type WorkshopSearchResponse = {
@@ -352,28 +516,94 @@ export type WorkshopSearchResponse = {
   };
 };
 
-export type WorkshopScenario = {
+export type WorkshopDependency = {
+  id: string;
   name: string;
-  description: string | null;
+  version: string | null;
+  sizeBytes: number | null;
+  published: boolean;
+  private: boolean;
+};
+
+export type WorkshopScenario = {
+  /** The `{HEX16}Missions/....conf` id used by game.scenarioId. */
   scenarioId: string;
-  gamemode: string | null;
+  name: string;
+  gameMode: string | null;
+  author: string | null;
+  description: string | null;
   playerCount: number | null;
-  imageUrl: string | null;
 };
 
 export type WorkshopModDetail = WorkshopModPreview & {
-  version: string | null;
-  gameVersion: string | null;
-  subscribers: number | null;
-  downloads: number | null;
-  createdAtText: string | null;
-  lastModifiedText: string | null;
-  summary: string | null;
   description: string | null;
   license: string | null;
-  tags: string[];
-  dependencies: { name: string; id: string | null }[];
+  downloadCount: number | null;
+  previewImages: string[];
+  screenshots: string[];
+  versionCount: number | null;
+  dependencyCount: number;
+  scenarioCount: number;
+  dependencySizeBytes: number | null;
+  totalSizeBytes: number | null;
+  dependencies: WorkshopDependency[];
   scenarios: WorkshopScenario[];
+};
+
+export type WorkshopModVersion = {
+  version: string;
+  gameVersion: string | null;
+  sizeBytes: number | null;
+  sizeText: string | null;
+  approved: boolean;
+  published: boolean;
+  createdAt: string | null;
+  scenarioCount: number | null;
+  dependencyCount: number | null;
+};
+
+export type WorkshopModVersionsResponse = {
+  modId: string;
+  versions: WorkshopModVersion[];
+};
+
+/** A live Arma Reforger server from the reforgermods.net server browser. */
+export type WorkshopServerSummary = {
+  id: string;
+  name: string;
+  scenarioId: string | null;
+  scenarioName: string | null;
+  gameVersion: string | null;
+  players: number;
+  maxPlayers: number;
+  region: string | null;
+  platform: string | null;
+  modCount: number;
+  official: boolean;
+  online: boolean;
+};
+
+export type WorkshopServerSearchResponse = {
+  servers: WorkshopServerSummary[];
+  meta: {
+    totalPages: number;
+    currentPage: number;
+    totalServers: number;
+  };
+};
+
+export type WorkshopServerMod = {
+  id: string;
+  name: string;
+  version: string | null;
+  sizeBytes: number | null;
+};
+
+export type WorkshopServerModsResponse = {
+  serverId: string;
+  mods: WorkshopServerMod[];
+  knownSizeBytes: number | null;
+  unresolvedCount: number;
 };
 
 // ---------- Log ingestion ----------

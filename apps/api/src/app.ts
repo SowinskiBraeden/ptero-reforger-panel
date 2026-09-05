@@ -11,11 +11,14 @@ import type { Logger } from './lib/logger.js';
 import { createAuthRouter } from './modules/auth/auth-routes.js';
 import { csrfProtection, sessionResolver } from './modules/auth/auth-middleware.js';
 import type { SessionService } from './modules/auth/session-service.js';
+import type { ConfigEditorService } from './modules/config/config-editor-service.js';
 import type { ConfigSyncService } from './modules/config/config-sync.js';
 import type { ServerModsService } from './modules/config/mods-service.js';
 import type { PerformanceSettingsService } from './modules/config/performance-service.js';
+import type { ServerMetricsService } from './modules/servers/metrics-service.js';
 import type { ResourceHistoryService } from './modules/servers/resource-history.js';
-import type { MissionCatalog } from './modules/reforger-logs/missions-catalog.js';
+import type { MissionsService } from './modules/reforger-logs/missions-catalog.js';
+import type { ConsoleHub } from './modules/pterodactyl/console-hub.js';
 import type { GameServerProvider } from './modules/pterodactyl/types.js';
 import type { LogPathResolver } from './modules/reforger-logs/ingestion/log-path-resolver.js';
 import type { IngestionScheduler } from './modules/reforger-logs/ingestion/scheduler.js';
@@ -24,7 +27,7 @@ import type { ServerService } from './modules/servers/server-service.js';
 import { createInviteRouter } from './modules/invites/invite-routes.js';
 import { createUserRouter } from './modules/users/user-routes.js';
 import { createWorkshopRouter } from './modules/workshop/workshop-routes.js';
-import type { WorkshopClient } from './modules/workshop/workshop-client.js';
+import type { WorkshopCache } from './modules/workshop/workshop-cache.js';
 
 export type AppDeps = {
   env: Env;
@@ -33,14 +36,17 @@ export type AppDeps = {
   sessions: SessionService;
   servers: ServerService;
   provider: GameServerProvider;
-  workshop: WorkshopClient;
+  metrics: ServerMetricsService;
+  consoleHub: ConsoleHub | null;
+  workshop: WorkshopCache;
   scheduler: IngestionScheduler | null;
   resolveLogPath: LogPathResolver | null;
   configSync: ConfigSyncService | null;
+  configEditor: ConfigEditorService | null;
   mods: ServerModsService | null;
   performance: PerformanceSettingsService | null;
   resourceHistory: ResourceHistoryService | null;
-  missions: MissionCatalog | null;
+  missions: MissionsService;
 };
 
 export function createApp(deps: AppDeps) {
@@ -108,9 +114,12 @@ export function createApp(deps: AppDeps) {
     createServerRouter({
       service: deps.servers,
       provider: deps.provider,
+      metrics: deps.metrics,
+      consoleHub: deps.consoleHub,
       scheduler: deps.scheduler,
       resolveLogPath: deps.resolveLogPath,
       configSync: deps.configSync,
+      configEditor: deps.configEditor,
       mods: deps.mods,
       performance: deps.performance,
       resourceHistory: deps.resourceHistory,
