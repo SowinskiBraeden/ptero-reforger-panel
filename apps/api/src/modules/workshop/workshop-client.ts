@@ -32,7 +32,7 @@ import { ApiError } from '../../lib/errors.js';
  */
 
 /** Identifies the panel to the upstream, as its docs request. */
-const CLIENT_NAME = 'reforger-panel';
+const CLIENT_NAME = 'reforger.dzr.tools';
 
 // ---------- upstream schemas ----------
 

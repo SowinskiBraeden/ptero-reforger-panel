@@ -120,6 +120,21 @@ describe('localizedLabel', () => {
 });
 
 describe('WorkshopClient (v2)', () => {
+  it('identifies panel traffic to the upstream API', async () => {
+    const { client: workshop, fetchImpl } = client(() => listResponse());
+    await workshop.search({});
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'User-Agent': 'reforger.dzr.tools',
+          'X-API-Client': 'reforger.dzr.tools',
+        }),
+      }),
+    );
+  });
+
   it('maps search results with typed sizes and ratings', async () => {
     const { client: workshop, fetchImpl } = client(() => listResponse());
     const result = await workshop.search({
